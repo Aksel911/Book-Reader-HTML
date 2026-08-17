@@ -1,4 +1,4 @@
-# 📚 Умный Читатель v2.2
+# 📚 Умный Читатель v5.2
 
 Офлайн-читатель книг для iPhone (Safari) на чистом HTML/CSS/JS.
 
@@ -223,3 +223,11 @@ python3 -m http.server 8080
 - PDF covers are lazy-loaded only near the viewport, with at most two renders in parallel.
 - Generated PDF thumbnails are cached in IndexedDB and reused on subsequent visits.
 - TTS highlights the actual reading surface in yellow for text-based books, EPUB and PDF text layers instead of relying on a separate caption panel.
+
+
+### v5 changes
+- Paragraph-aware TTS: tap any text paragraph to start reading from it.
+- Sentence-level yellow highlighting directly inside the book for text formats.
+- Voice changes preserve the current speech character position instead of restarting.
+- Pause/resume preserves the current sentence and character offset.
+- Desktop library rendering is lighter: fewer initial DOM cards, idle-scheduled previews, one PDF preview worker, smaller thumbnails, object-URL cleanup, and reduced expensive visual effects.

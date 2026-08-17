@@ -39,6 +39,12 @@
     readingStart: null,
     ttsSentences: [],
     ttsSentenceIdx: 0,
+    ttsCharOffset: 0,
+    ttsPendingResumeOffset: 0,
+    ttsSession: 0,
+    ttsActive: false,
+    ttsPaused: false,
+    ttsCurrentVoiceKey: '',
     pendingBookmark: null,
     // Archive navigation
     archiveStack: [],          // [{name, books: [...], path}]
@@ -397,7 +403,8 @@
   const PREVIEW_PENDING = new Set();
   const PREVIEW_QUEUE = [];
   let previewWorkers = 0;
-  const PREVIEW_CONCURRENCY = 2;
+  const PREVIEW_CONCURRENCY = 1;
+  const PREVIEW_MAX_WIDTH = 112;
   let previewObserver = null;
   let previewDBPromise = null;
 
@@ -447,6 +454,7 @@
     }
   }
   async function hydratePreviewNow(book, card) {
+    if (!card.isConnected) return;
     const host = card.querySelector('.book-cover');
     if (!host) return;
     const cached = await getCachedPreview(book);
@@ -463,8 +471,8 @@
     try {
       const page = await doc.getPage(1);
       const base = page.getViewport({scale:1});
-      const targetWidth = 180;
-      const scale = Math.min(0.55, targetWidth / Math.max(1, base.width));
+      const targetWidth = PREVIEW_MAX_WIDTH;
+      const scale = Math.min(0.36, targetWidth / Math.max(1, base.width));
       const vp = page.getViewport({scale});
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
@@ -495,7 +503,11 @@
         previewObserver.unobserve(entry.target);
         const key=entry.target.dataset.previewKey;
         const source=(state.rootBooks||state.books).find(b=>(b.key||b.path)===key) || getCurrentBooks().find(b=>(b.key||b.path)===key);
-        if(source) queuePreview(source, entry.target);
+        if(source) {
+          const run = () => queuePreview(source, entry.target);
+          if (window.requestIdleCallback) requestIdleCallback(run, {timeout: 900});
+          else setTimeout(run, 120);
+        }
       }), {rootMargin:'100px 0px', threshold:0.01});
     }
     card.dataset.previewKey=book.key||book.path;
@@ -567,7 +579,9 @@
     if(status!=='all') active.push(status==='favorites'?'Избранное':status==='reading'?'В процессе':status==='finished'?'Прочитано':'Не начато');
     active.forEach(t=>{const c=document.createElement('span');c.className='filter-chip';c.textContent=t;chipBox.appendChild(c);});
 
-    const grid=$('#books-grid'); grid.innerHTML='';
+    const grid=$('#books-grid');
+    grid.querySelectorAll('.book-cover[data-preview-url]').forEach(host => { try { URL.revokeObjectURL(host.dataset.previewUrl); } catch(e) {} });
+    grid.innerHTML='';
     if(!visibleFolders.length && !list.length){
       grid.innerHTML=`<div class="empty-library"><div class="empty-icon">⌕</div><h3>Ничего не найдено</h3><p>Измените поиск или фильтры, либо добавьте ещё книги.</p></div>`;
       return;
@@ -581,7 +595,8 @@
       grid.appendChild(card);
     }
 
-    state.libraryRenderLimit=Math.max(60,state.libraryRenderLimit||60);
+    const initialLimit = window.innerWidth >= 900 ? 36 : 48;
+    state.libraryRenderLimit=Math.max(initialLimit,state.libraryRenderLimit||initialLimit);
     const renderSlice=()=>{
       const oldMore=grid.querySelector('.books-load-more'); if(oldMore) oldMore.remove();
       const end=Math.min(state.libraryRenderLimit,list.length);
@@ -987,17 +1002,61 @@
     paginateText(text, book);
   }
 
+  function normalizeReadableParagraph(text) {
+    return String(text || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\s+([,.;!?…])/g, '$1')
+      .trim();
+  }
+
+  function tokenizeParagraph(text) {
+    const clean = normalizeReadableParagraph(text);
+    if (!clean) return [];
+    const parts = clean.match(/[^.!?…]+(?:[.!?…]+(?=\s|$)|$)/g) || [clean];
+    const out = [];
+    for (const raw of parts) {
+      const s = raw.trim();
+      if (!s) continue;
+      if (s.length <= 300) { out.push(s); continue; }
+      let buf = '';
+      for (const clause of s.split(/(?<=[,;:—–])\s+/)) {
+        if (!buf) buf = clause;
+        else if ((buf + ' ' + clause).length <= 300) buf += ' ' + clause;
+        else { out.push(buf.trim()); buf = clause; }
+      }
+      if (buf) out.push(buf.trim());
+    }
+    return out;
+  }
+
+  function buildTTSUnits(text) {
+    const normalized = String(text || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
+    const paragraphs = normalized.split(/\n\s*\n/);
+    const units = [];
+    paragraphs.forEach((raw, paragraphIndex) => {
+      const sentences = tokenizeParagraph(raw);
+      sentences.forEach((sentence, sentenceIndex) => {
+        units.push({
+          text: sentence,
+          paragraphIndex,
+          sentenceIndex,
+          paragraphEnd: sentenceIndex === sentences.length - 1
+        });
+      });
+    });
+    return units;
+  }
+
   function paginateText(text, book) {
     const pageSize = 2200;
     state.textPages = [];
-    for (let i = 0; i < text.length; i += pageSize) {
-      state.textPages.push(text.slice(i, i + pageSize));
-    }
+    for (let i = 0; i < text.length; i += pageSize) state.textPages.push(text.slice(i, i + pageSize));
     if (!state.textPages.length) state.textPages = [''];
     state.textPage = Math.min(state.textPages.length - 1, Math.floor((book.progress || 0) * state.textPages.length) || 0);
     state.textContent = state.textPages[state.textPage];
 
-    $('#reader-content').innerHTML = '<div class="text-reader" id="text-reader"></div>';
+    $('#reader-content').innerHTML = '<div class="text-reader" id="text-reader" aria-label="Текст книги"></div>';
     renderTextPage(true);
   }
 
@@ -1005,7 +1064,28 @@
     const el = $('#text-reader');
     if (!el) return;
     state.textContent = state.textPages[state.textPage] || '';
-    el.textContent = state.textContent; // will re-render with highlights later
+    el.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    const paragraphs = String(state.textContent).replace(/\r\n?/g, '\n').split(/\n\s*\n/);
+    paragraphs.forEach((raw, paragraphIndex) => {
+      const p = document.createElement('p');
+      p.className = 'read-paragraph';
+      p.dataset.paragraphIndex = String(paragraphIndex);
+      p.title = 'Нажмите, чтобы читать с этого абзаца';
+      const sentences = tokenizeParagraph(raw);
+      sentences.forEach((sentence, sentenceIndex) => {
+        const span = document.createElement('span');
+        span.className = 'read-sentence';
+        span.dataset.ttsId = `${paragraphIndex}:${sentenceIndex}`;
+        span.textContent = sentence;
+        p.appendChild(span);
+        if (sentenceIndex < sentences.length - 1) p.appendChild(document.createTextNode(' '));
+      });
+      if (!sentences.length) p.appendChild(document.createTextNode(normalizeReadableParagraph(raw)));
+      p.addEventListener('click', () => startTTSFromParagraph(paragraphIndex));
+      frag.appendChild(p);
+    });
+    el.appendChild(frag);
     applyReaderStyles();
     $('#page-num').textContent = state.textPage + 1;
     $('#page-count').textContent = state.textPages.length;
@@ -1061,27 +1141,30 @@
     if (Math.abs(dx) > 55) (dx < 0 ? goNext : goPrev)();
   }, { passive: true });
 
-  // ===== TTS with sentence highlighting =====
+  // ===== TTS: paragraph-aware, resumable, in-book highlighting =====
   const synth = window.speechSynthesis || null;
+
+  function voiceKey(v) { return v ? `${v.name}|${v.lang}|${v.localService ? 'local' : 'remote'}` : ''; }
 
   function loadVoices() {
     if (!synth) return;
     state.voices = synth.getVoices();
     const sel = $('#tts-voice');
+    const savedKey = localStorage.getItem('ttsVoiceKey') || state.ttsCurrentVoiceKey;
     sel.innerHTML = '';
-    if (!state.voices.length) {
-      sel.innerHTML = '<option>Голоса...</option>';
-      return;
-    }
-    const langPref = state.detectedLang.slice(0, 2);
-    const preferred = state.voices.filter(v => v.lang.startsWith(langPref));
-    const rest = state.voices.filter(v => !v.lang.startsWith(langPref));
+    if (!state.voices.length) { sel.innerHTML = '<option>Голоса...</option>'; return; }
+    const langPref = (state.detectedLang || 'ru-RU').slice(0, 2).toLowerCase();
+    const preferred = state.voices.filter(v => v.lang.toLowerCase().startsWith(langPref));
+    const rest = state.voices.filter(v => !v.lang.toLowerCase().startsWith(langPref));
     [...preferred, ...rest].forEach(v => {
       const opt = document.createElement('option');
       opt.value = state.voices.indexOf(v);
       opt.textContent = `${v.name} (${v.lang})`;
+      opt.dataset.voiceKey = voiceKey(v);
       sel.appendChild(opt);
     });
+    const preferredIndex = state.voices.findIndex(v => voiceKey(v) === savedKey);
+    if (preferredIndex >= 0) sel.value = String(preferredIndex);
   }
   if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
   loadVoices();
@@ -1091,109 +1174,94 @@
   function getCurrentText() {
     if (['pdf', 'txt', 'html', 'htm', 'fb2'].includes(state.currentType)) return state.textContent || '';
     if (state.currentType === 'epub') {
-      try {
-        const iframe = document.querySelector('#epub-area iframe');
-        if (iframe && iframe.contentDocument) return iframe.contentDocument.body.innerText || state.textContent;
-      } catch (e) {}
+      try { const iframe = document.querySelector('#epub-area iframe'); if (iframe?.contentDocument) return iframe.contentDocument.body.innerText || state.textContent; } catch (e) {}
       return state.textContent || '';
     }
-    return '';
+    return state.textContent || '';
   }
 
-  function hideLiveCaption() {
-    const c = $('#tts-live-caption');
-    c.classList.add('hidden');
-    c.innerHTML = '';
-  }
-
-  function showLiveCaption(text, activeWord = -1) {
-    const c = $('#tts-live-caption');
-    if (!text) { hideLiveCaption(); return; }
-    c.classList.remove('hidden');
-    const words = text.split(/(\s+)/);
-    let pos = 0;
-    c.innerHTML = words.map(part => {
-      if (/\s+/.test(part)) return part;
-      const i = pos++;
-      return `<span class="tts-caption-word${i === activeWord ? ' active':''}">${escapeHtml(part)}</span>`;
-    }).join('');
-  }
-
-  function clearTextReaderMark(el) {
+  function clearTextSentenceHighlights() {
+    const el = $('#text-reader');
     if (!el) return;
-    const marks=el.querySelectorAll('span.tts-book-highlight');
-    marks.forEach(mark=>mark.replaceWith(document.createTextNode(mark.textContent||'')));
-    el.normalize();
+    el.querySelectorAll('.read-sentence.is-speaking').forEach(x => x.classList.remove('is-speaking'));
+    el.querySelectorAll('.read-paragraph.is-speaking').forEach(x => x.classList.remove('is-speaking'));
   }
-  function highlightTextReaderSentence(text) {
-    const el=$('#text-reader'); if(!el || !text) return;
-    clearTextReaderMark(el);
-    const full=el.textContent||''; const needle=text.trim();
-    const pos=full.indexOf(needle); if(pos<0) return;
-    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
-    let node, offset=0, startNode=null,endNode=null,startOffset=0,endOffset=0;
-    while(node=walker.nextNode()){
-      const next=offset+(node.nodeValue||'').length;
-      if(startNode===null && pos>=offset && pos<next){ startNode=node; startOffset=pos-offset; }
-      if(startNode && pos+needle.length<=next){ endNode=node; endOffset=pos+needle.length-offset; break; }
-      offset=next;
+
+  function highlightSentence(idx) {
+    const item = state.ttsSentences[idx];
+    if (!item) return;
+    clearTextSentenceHighlights();
+    if (['txt','html','htm','fb2'].includes(state.currentType)) {
+      const el = document.querySelector(`#text-reader .read-sentence[data-tts-id="${CSS.escape(`${item.paragraphIndex}:${item.sentenceIndex}`)}"]`);
+      const p = document.querySelector(`#text-reader .read-paragraph[data-paragraph-index="${item.paragraphIndex}"]`);
+      if (p) p.classList.add('is-speaking');
+      if (el) {
+        el.classList.add('is-speaking');
+        el.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
+      }
+      return;
     }
-    if(!startNode||!endNode) return;
-    try{ const r=document.createRange(); r.setStart(startNode,startOffset); r.setEnd(endNode,endOffset); const mark=document.createElement('span'); mark.className='tts-book-highlight'; r.surroundContents(mark); mark.scrollIntoView({behavior:'smooth',block:'center',inline:'nearest'}); }catch(e){}
+    if (state.currentType === 'pdf') {
+      const layer = document.querySelector('#pdf-text-layer');
+      if (!layer) return;
+      layer.querySelectorAll('.tts-pdf-active').forEach(x=>x.classList.remove('tts-pdf-active'));
+      const tokens = item.text.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu,' ').split(/\s+/).filter(w=>w.length>2).slice(0,10);
+      const spans = [...layer.querySelectorAll('span')];
+      spans.forEach(span => {
+        const t=(span.textContent||'').toLowerCase();
+        if (tokens.some(token=>t.includes(token))) span.classList.add('tts-pdf-active');
+      });
+      const first = layer.querySelector('.tts-pdf-active');
+      if (first) first.scrollIntoView({behavior:'smooth', block:'center'});
+      return;
+    }
+    if (state.currentType === 'epub') highlightEpubSentence(item.text);
   }
+
   function clearEpubHighlight() {
     try {
-      const iframe=document.querySelector('#epub-area iframe');
-      const doc=iframe&&iframe.contentDocument;
-      doc?.querySelectorAll('span.tts-book-highlight').forEach(m=>m.replaceWith(doc.createTextNode(m.textContent||'')));
-      doc?.body?.normalize();
+      document.querySelectorAll('#epub-area iframe').forEach(iframe => {
+        const doc=iframe.contentDocument;
+        doc?.querySelectorAll('.tts-book-highlight').forEach(m=>m.replaceWith(doc.createTextNode(m.textContent||'')));
+        doc?.body?.normalize();
+      });
     } catch(e) {}
   }
+
   function highlightEpubSentence(text) {
-    if(!text) return;
-    try{
-      const iframe=document.querySelector('#epub-area iframe'); const doc=iframe&&iframe.contentDocument; if(!doc) return;
+    if (!text) return;
+    try {
+      const iframe=document.querySelector('#epub-area iframe'); const doc=iframe?.contentDocument; if(!doc) return;
       clearEpubHighlight();
-      const needle=text.trim(); const walker=doc.createTreeWalker(doc.body,NodeFilter.SHOW_TEXT);
-      let node,offset=0, startNode=null,endNode=null,startOffset=0,endOffset=0;
-      while(node=walker.nextNode()){
-        const val=node.nodeValue||''; const idx=val.indexOf(needle);
-        if(idx>=0){startNode=node;startOffset=idx;endNode=node;endOffset=idx+needle.length;break;}
-        offset+=val.length;
+      const needle = normalizeReadableParagraph(text);
+      const walker=doc.createTreeWalker(doc.body,NodeFilter.SHOW_TEXT);
+      const nodes=[]; let n; let total=0;
+      while(n=walker.nextNode()){ nodes.push({n,start:total}); total += (n.nodeValue||'').length; }
+      const raw = nodes.map(x=>x.n.nodeValue||'').join('');
+      const normalized = raw.replace(/\s+/g,' ');
+      const idx = normalized.indexOf(needle.replace(/\s+/g,' '));
+      if(idx<0) return;
+      // Fallback: find exact substring inside the first matching text node where possible.
+      let cursor=0;
+      for(const item of nodes){
+        const val=item.n.nodeValue||''; const hit=val.indexOf(text);
+        if(hit>=0){
+          const r=doc.createRange(); r.setStart(item.n,hit); r.setEnd(item.n,hit+text.length);
+          const mark=doc.createElement('span'); mark.className='tts-book-highlight'; r.surroundContents(mark); mark.scrollIntoView({behavior:'smooth',block:'center'}); return;
+        }
+        cursor += val.length;
       }
-      if(!startNode) return;
-      const r=doc.createRange(); r.setStart(startNode,startOffset); r.setEnd(endNode,endOffset);
-      const mark=doc.createElement('span'); mark.className='tts-book-highlight'; r.surroundContents(mark); mark.scrollIntoView({behavior:'smooth',block:'center'});
-    }catch(e){}
+    } catch(e) {}
   }
+
   function clearHighlights() {
-    const el=$('#text-reader'); if(el) clearTextReaderMark(el);
+    clearTextSentenceHighlights();
     document.querySelectorAll('#pdf-text-layer .tts-pdf-active').forEach(x=>x.classList.remove('tts-pdf-active'));
-    clearEpubHighlight(); hideLiveCaption();
-  }
-  function highlightSentence(idx, wordIdx=-1) {
-    const item=state.ttsSentences[idx]; if(!item) return;
-    if(state.currentType==='pdf') {
-      const layer=document.querySelector('#pdf-text-layer');
-      if(layer){
-        layer.querySelectorAll('.tts-pdf-active').forEach(x=>x.classList.remove('tts-pdf-active'));
-        const tokens=speechFriendlyText(item.text).toLowerCase().split(/\s+/).filter(w=>w.length>2).slice(0,7);
-        layer.querySelectorAll('span').forEach(span=>{const t=(span.textContent||'').toLowerCase();if(tokens.some(token=>t.includes(token.replace(/[^\p{L}\p{N}]+/gu,'')))) span.classList.add('tts-pdf-active');});
-      }
-    } else if(['txt','html','htm','fb2'].includes(state.currentType) && state.highlightTTS) {
-      highlightTextReaderSentence(item.text);
-    } else if(state.currentType==='epub' && state.highlightTTS) {
-      highlightEpubSentence(item.text);
-    }
+    clearEpubHighlight();
   }
 
   function speechFriendlyText(s) {
-    return String(s)
-      .replace(/\s*[—–]\s*/g, ', — ')
-      .replace(/\s*:\s*/g, ': ')
-      .replace(/\s*;\s*/g, '; ')
-      .replace(/\.{4,}/g, '…')
-      .trim();
+    return String(s).replace(/\s*[—–]\s*/g, ', — ').replace(/\s*:\s*/g, ': ').replace(/\s*;\s*/g, '; ').replace(/\.{4,}/g, '…').trim();
   }
 
   function smartPauseMs(item) {
@@ -1206,112 +1274,133 @@
     return pause;
   }
 
-  function speakSentences(sentences, startIdx = 0) {
+  function speakSentences(sentences, startIdx = 0, resumeChar = 0) {
     if (!synth) { toast('Озвучка недоступна в этом браузере'); return; }
     if (!sentences.length) { toast('Нет текста для озвучки'); return; }
-    state.ttsSentences = sentences.map(x => typeof x === 'string' ? {text:x,paragraphEnd:false} : x);
-    state.ttsSentenceIdx = startIdx;
-    speakNextSentence();
+    state.ttsSentences = sentences.map(x => typeof x === 'string' ? {text:x,paragraphEnd:false,paragraphIndex:0,sentenceIndex:0} : x);
+    state.ttsSentenceIdx = Math.max(0, Math.min(startIdx, state.ttsSentences.length - 1));
+    state.ttsCharOffset = Math.max(0, resumeChar || 0);
+    state.ttsPendingResumeOffset = state.ttsCharOffset;
+    state.ttsActive = true;
+    state.ttsPaused = false;
+    speakNextSentence(state.ttsCharOffset);
   }
 
-  function speakNextSentence() {
-    if (state.ttsSentenceIdx >= state.ttsSentences.length) {
-      state.isSpeaking = false;
-      $('#tts-play').textContent = '▶';
-      clearHighlights();
+  function selectedVoice() {
+    const idx = parseInt($('#tts-voice').value,10);
+    return !isNaN(idx) && state.voices[idx] ? state.voices[idx] : null;
+  }
+
+  function speakNextSentence(resumeChar = 0) {
+    if (!state.ttsActive || state.ttsSentenceIdx >= state.ttsSentences.length) {
+      state.ttsActive = false; state.ttsPaused = false; state.isSpeaking = false; $('#tts-play').textContent='▶'; clearHighlights();
       if (state.continuousTTS) {
         setTimeout(() => {
-          if (state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) {
-            renderPDFPage(state.pdfPage + 1).then(() => { const next=splitSentences(getCurrentText()); if(next.length) speakSentences(next); });
-          } else if (state.currentType === 'epub' && state.epubRendition) {
-            state.epubRendition.next().then(() => setTimeout(() => { const next=splitSentences(getCurrentText()); if(next.length) speakSentences(next); }, 500));
-          } else if (['txt','html','htm','fb2'].includes(state.currentType) && state.textPage < state.textPages.length - 1) {
-            state.textPage++; renderTextPage(); const next=splitSentences(state.textContent); if(next.length) speakSentences(next);
-          }
+          if (!state.ttsActive && state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) renderPDFPage(state.pdfPage + 1).then(()=>speakSentences(buildTTSUnits(getCurrentText())));
+          else if (!state.ttsActive && state.currentType === 'epub' && state.epubRendition) state.epubRendition.next().then(()=>setTimeout(()=>speakSentences(buildTTSUnits(getCurrentText())),450));
+          else if (!state.ttsActive && ['txt','html','htm','fb2'].includes(state.currentType) && state.textPage < state.textPages.length - 1) { state.textPage++; renderTextPage(); speakSentences(buildTTSUnits(state.textContent)); }
         }, Math.max(140, state.ttsPause));
       }
       return;
     }
+
     const item = state.ttsSentences[state.ttsSentenceIdx];
-    const text = speechFriendlyText(item.text);
-    highlightSentence(state.ttsSentenceIdx, -1);
-    synth.cancel();
+    const sourceText = speechFriendlyText(item.text);
+    const offset = Math.max(0, Math.min(resumeChar || 0, sourceText.length - 1));
+    const text = offset > 0 ? sourceText.slice(offset) : sourceText;
+    const session = ++state.ttsSession;
+    state.ttsCharOffset = offset;
+    highlightSentence(state.ttsSentenceIdx);
+    if (synth) synth.cancel();
+
     const u = new SpeechSynthesisUtterance(text);
     const override = $('#tts-lang-override').value;
     const lang = override === 'auto' ? state.detectedLang : override;
-    u.lang = lang;
-    u.rate = state.ttsRate;
-    const emotion = /[!?]$/.test(text) ? 0.06 : (/…$/.test(text) ? -0.03 : 0);
-    u.pitch = Math.max(0.7, Math.min(1.3, state.ttsPitch + emotion));
-    u.volume = 1;
-    const idx = parseInt($('#tts-voice').value,10);
-    if (!isNaN(idx) && state.voices[idx]) u.voice=state.voices[idx];
-    else {
-      const matches = state.voices.filter(v => v.lang.toLowerCase().startsWith(lang.slice(0,2).toLowerCase()));
-      const local = matches.find(v => v.localService) || matches[0];
-      if (local) u.voice=local;
-    }
+    u.lang = lang; u.rate = state.ttsRate;
+    const emotion = /[!?]$/.test(text) ? 0.05 : (/…$/.test(text) ? -0.025 : 0);
+    u.pitch = Math.max(0.75, Math.min(1.28, state.ttsPitch + emotion)); u.volume=1;
+    const v = selectedVoice(); if (v) { u.voice=v; state.ttsCurrentVoiceKey=voiceKey(v); localStorage.setItem('ttsVoiceKey',state.ttsCurrentVoiceKey); }
+
     u.onboundary = e => {
-      if (typeof e.charIndex !== 'number') return;
-      const before = text.slice(0,e.charIndex);
-      const wordIdx = before.trim() ? before.trim().split(/\s+/).length - 1 : 0;
-      highlightSentence(state.ttsSentenceIdx, Math.max(0, wordIdx));
+      if (session !== state.ttsSession || typeof e.charIndex !== 'number') return;
+      state.ttsCharOffset = offset + e.charIndex;
+      state.ttsPendingResumeOffset = state.ttsCharOffset;
     };
+    u.onpause = e => {
+      if (session !== state.ttsSession) return;
+      if (typeof e.charIndex === 'number') { state.ttsCharOffset = offset + e.charIndex; state.ttsPendingResumeOffset = state.ttsCharOffset; }
+      state.ttsPaused = true; state.isSpeaking = true; $('#tts-play').textContent='▶';
+    };
+    u.onresume = () => { if(session===state.ttsSession){ state.ttsPaused=false; state.isSpeaking=true; $('#tts-play').textContent='⏸'; } };
     u.onend = () => {
-      state.ttsSentenceIdx++;
-      if (state.isSpeaking) setTimeout(() => speakNextSentence(), smartPauseMs(item));
+      if (session !== state.ttsSession || !state.ttsActive) return;
+      state.ttsCharOffset = 0; state.ttsPendingResumeOffset = 0; state.ttsSentenceIdx++;
+      if (state.isSpeaking && !state.ttsPaused) setTimeout(()=>speakNextSentence(), smartPauseMs(item));
     };
-    u.onerror = () => { state.isSpeaking=false; $('#tts-play').textContent='▶'; };
-    state.isSpeaking=true;
-    $('#tts-play').textContent='⏸';
-    showLiveCaption(text,-1);
+    u.onerror = e => { if(session!==state.ttsSession) return; if(e.error==='canceled') return; state.ttsActive=false; state.isSpeaking=false; state.ttsPaused=false; $('#tts-play').textContent='▶'; toast('Не удалось продолжить озвучку'); };
+    state.ttsUtterance = u; state.isSpeaking=true; state.ttsPaused=false; $('#tts-play').textContent='⏸';
     synth.speak(u);
   }
 
-  function startTTS() {
-    const text = getCurrentText();
-    const sentences = splitSentences(text);
-    speakSentences(sentences);
+  function startTTS() { speakSentences(buildTTSUnits(getCurrentText())); }
+
+  function startTTSFromParagraph(paragraphIndex) {
+    const units = buildTTSUnits(getCurrentText()).filter(u => u.paragraphIndex >= paragraphIndex);
+    const first = units.findIndex(u => u.paragraphIndex === paragraphIndex);
+    if (first < 0) return toast('В этом абзаце нет текста для озвучки');
+    if (synth) synth.cancel();
+    state.ttsActive = false; state.ttsSession++;
+    speakSentences(units, first, 0);
+    toast(`Чтение с абзаца ${paragraphIndex + 1}`);
   }
 
   $('#tts-play').addEventListener('click', () => {
-    if (state.isSpeaking) {
-      if (synth.paused) {
-        synth.resume();
-        $('#tts-play').textContent = '⏸';
-      } else {
-        synth.pause();
-        $('#tts-play').textContent = '▶';
-      }
+    if (!synth) return;
+    if (state.ttsActive && synth.paused) {
+      if (state.ttsPendingResumeOffset > 0 || state.ttsPendingVoiceRebuild) {
+        const idx = state.ttsSentenceIdx; const off = state.ttsPendingResumeOffset;
+        state.ttsPendingVoiceRebuild = false; state.ttsSession++; synth.cancel();
+        setTimeout(()=>{ state.isSpeaking=true; state.ttsPaused=false; speakNextSentence(off); }, 40);
+      } else { synth.resume(); state.ttsPaused=false; state.isSpeaking=true; $('#tts-play').textContent='⏸'; }
+    } else if (state.ttsActive && synth.speaking) {
+      synth.pause();
     } else {
       startTTS();
     }
   });
 
   $('#tts-stop').addEventListener('click', () => {
+    state.ttsActive=false; state.ttsPaused=false; state.ttsSession++;
     if (synth) synth.cancel();
-    state.isSpeaking = false;
-    $('#tts-play').textContent = '▶';
-    clearHighlights();
+    state.isSpeaking=false; state.ttsCharOffset=0; state.ttsPendingResumeOffset=0;
+    $('#tts-play').textContent='▶'; clearHighlights();
   });
 
-  $('#tts-rate').addEventListener('input', e => {
-    state.ttsRate = parseFloat(e.target.value);
-    localStorage.setItem('ttsRate', state.ttsRate);
-    $('#tts-rate-label').textContent = state.ttsRate.toFixed(1) + '×';
+  $('#tts-voice').addEventListener('change', () => {
+    const v=selectedVoice(); if(!v) return;
+    state.ttsCurrentVoiceKey=voiceKey(v); localStorage.setItem('ttsVoiceKey',state.ttsCurrentVoiceKey);
+    // A voice cannot be swapped inside an existing utterance. Preserve exact character position,
+    // cancel the old utterance, and rebuild from that offset. This prevents "jump to start".
+    if (state.ttsActive) {
+      const off = state.ttsPendingResumeOffset || state.ttsCharOffset || 0;
+      state.ttsPendingResumeOffset = off;
+      state.ttsPendingVoiceRebuild = true;
+      if (!synth?.paused && synth?.speaking) {
+        state.ttsSession++; synth.cancel();
+        setTimeout(()=>{ if(state.ttsActive){ state.ttsPendingVoiceRebuild=false; state.isSpeaking=true; speakNextSentence(off); } }, 50);
+      }
+    }
   });
 
+  $('#tts-rate').addEventListener('input', e => { state.ttsRate=parseFloat(e.target.value); localStorage.setItem('ttsRate',state.ttsRate); $('#tts-rate-label').textContent=state.ttsRate.toFixed(1)+'×'; });
   $('#tts-more-btn').addEventListener('click', () => $('#tts-settings-overlay').classList.remove('hidden'));
   $('#close-tts-settings').addEventListener('click', () => $('#tts-settings-overlay').classList.add('hidden'));
-  $('#tts-settings-overlay').addEventListener('click', e => { if (e.target === $('#tts-settings-overlay')) $('#tts-settings-overlay').classList.add('hidden'); });
-  $('#tts-pitch').value = state.ttsPitch;
-  $('#tts-pitch-label').textContent = state.ttsPitch.toFixed(2);
-  $('#tts-pause').value = state.ttsPause;
-  $('#tts-pause-label').textContent = state.ttsPause + ' мс';
-  $('#tts-smart-pause').checked = state.ttsSmartPause;
-  $('#tts-pitch').addEventListener('input', e => { state.ttsPitch=parseFloat(e.target.value); localStorage.setItem('ttsPitch',state.ttsPitch); $('#tts-pitch-label').textContent=state.ttsPitch.toFixed(2); });
-  $('#tts-pause').addEventListener('input', e => { state.ttsPause=parseInt(e.target.value,10); localStorage.setItem('ttsPause',state.ttsPause); $('#tts-pause-label').textContent=state.ttsPause+' мс'; });
-  $('#tts-smart-pause').addEventListener('change', e => { state.ttsSmartPause=e.target.checked; localStorage.setItem('ttsSmartPause',e.target.checked); });
+  $('#tts-settings-overlay').addEventListener('click', e => { if(e.target===$('#tts-settings-overlay')) $('#tts-settings-overlay').classList.add('hidden'); });
+  $('#tts-pitch').value=state.ttsPitch; $('#tts-pitch-label').textContent=state.ttsPitch.toFixed(2);
+  $('#tts-pause').value=state.ttsPause; $('#tts-pause-label').textContent=state.ttsPause+' мс'; $('#tts-smart-pause').checked=state.ttsSmartPause;
+  $('#tts-pitch').addEventListener('input',e=>{state.ttsPitch=parseFloat(e.target.value);localStorage.setItem('ttsPitch',state.ttsPitch);$('#tts-pitch-label').textContent=state.ttsPitch.toFixed(2);});
+  $('#tts-pause').addEventListener('input',e=>{state.ttsPause=parseInt(e.target.value,10);localStorage.setItem('ttsPause',state.ttsPause);$('#tts-pause-label').textContent=state.ttsPause+' мс';});
+  $('#tts-smart-pause').addEventListener('change',e=>{state.ttsSmartPause=e.target.checked;localStorage.setItem('ttsSmartPause',e.target.checked);});
 
   // ===== Sleep Timer =====
   $('#tts-timer-btn').addEventListener('click', () => {
