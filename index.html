@@ -9,9 +9,6 @@
   <meta name="description" content="Умный читатель книг с озвучкой для iPhone">
   <title>Book Reader</title>
   <link rel="manifest" href="manifest.json">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <!-- All libraries local — no CDN 404s -->
   <script src="libs/pdf.min.js"></script>
@@ -35,19 +32,37 @@
     </header>
 
     <main class="library-main">
-      <div class="welcome-card" id="welcome-card">
-        <div class="welcome-icon">📚</div>
-        <h2>Ваша библиотека</h2>
-        <p>PDF, EPUB, FB2, DJVU, TXT, HTML и ZIP-архивы.<br>Файлы остаются на устройстве — ничего не загружается в облако.</p>
-        <label class="select-folder-btn">
-          <input type="file" id="folder-input" webkitdirectory directory multiple
-                 accept=".pdf,.epub,.fb2,.djvu,.djv,.txt,.html,.htm,.zip,.rar">
-          <span>📁 Выбрать папку</span>
-        </label>
-        <p class="hint">iOS 18.4+ — полноценный выбор папки.<br>На старых версиях выбирайте файлы.</p>
-      </div>
+      <section class="welcome-card" id="welcome-card">
+        <div class="hero-orb" aria-hidden="true"></div>
+        <div class="welcome-icon">✦</div>
+        <p class="eyebrow">PRIVATE · OFFLINE · YOUR BOOKS</p>
+        <h2>Ваша личная библиотека</h2>
+        <p class="welcome-copy">Открывайте книги прямо с устройства. PDF, EPUB, FB2, DJVU, TXT, HTML и архивы — без загрузки файлов на сервер.</p>
+        <div class="picker-grid">
+          <label class="select-folder-btn primary-picker">
+            <input type="file" id="folder-input" webkitdirectory directory multiple
+                   accept=".pdf,.epub,.fb2,.djvu,.djv,.txt,.html,.htm,.zip,.rar">
+            <span>📁 Сканировать папку</span>
+          </label>
+          <label class="select-folder-btn secondary-picker">
+            <input type="file" id="files-input" multiple
+                   accept=".pdf,.epub,.fb2,.djvu,.djv,.txt,.html,.htm,.zip,.rar">
+            <span>＋ Выбрать файлы</span>
+          </label>
+        </div>
+        <div class="privacy-note"><span>●</span> Всё остаётся на устройстве</div>
+        <p class="hint">На iPhone можно выбирать папки, если это поддерживает текущая версия Safari. В остальных случаях выберите сразу несколько файлов.</p>
+      </section>
 
       <div id="library-content" class="hidden">
+        <section class="library-hero">
+          <div>
+            <p class="eyebrow">YOUR LIBRARY</p>
+            <h2 id="library-heading">Все книги</h2>
+            <p id="library-subheading">Локальная коллекция на этом устройстве</p>
+          </div>
+          <div class="hero-stat"><strong id="hero-book-count">0</strong><span>файлов</span></div>
+        </section>
         <div class="library-toolbar">
           <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
           <div class="search-box">

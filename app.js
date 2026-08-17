@@ -118,9 +118,15 @@
   // Split text into sentences for TTS highlighting
   function splitSentences(text) {
     if (!text) return [];
-    // Split on . ! ? … + following space/newline, keep delimiter
-    const parts = text.match(/[^.!?…]+[.!?…]+[\s]*/g) || [text];
-    return parts.map(s => s.trim()).filter(Boolean);
+    const parts = text.match(/[^.!?…]+[.!?…]+(?:\s+|$)|[^.!?…]+$/g) || [text];
+    const out = [];
+    for (const part of parts) {
+      const clean = part.replace(/\s+/g, ' ').trim();
+      if (!clean) continue;
+      if (clean.length <= 260) out.push(clean);
+      else for (let i = 0; i < clean.length; i += 240) out.push(clean.slice(i, i + 240).trim());
+    }
+    return out.filter(Boolean);
   }
 
   // ===== Storage =====
@@ -213,41 +219,63 @@
     }
   }
 
-  // ===== Folder =====
-  $('#folder-input').addEventListener('change', async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    showLoading('Сканирую папку...');
-    const books = [];
-    for (const file of files) {
-      if (!isSupportedEntry(file.name)) continue;
-      const rel = file.webkitRelativePath || file.name;
-      const type = getExt(file.name);
-      const isArch = isArchive(file.name);
-      books.push({
-        id: uid(),
-        name: file.name.replace(/\.[^.]+$/, ''),
-        path: rel,
-        type: isArch ? type : type,
-        isArchive: isArch,
-        file,
-        size: file.size,
-        progress: isArch ? 0 : getProgress(rel),
-        lastOpened: 0
-      });
-    }
-    // restore lastOpened
-    const recents = loadJSON('recentBooks', {});
-    books.forEach(b => { b.lastOpened = recents[b.path] || 0; });
+  // ===== Library import =====
+  const SUPPORTED_EXTENSIONS = ['pdf', 'epub', 'fb2', 'djvu', 'djv', 'txt', 'html', 'htm', 'zip', 'rar'];
 
+  function makeBook(file, relPath = '') {
+    const type = getExt(file.name);
+    const archive = isArchive(file.name);
+    const path = relPath || file.webkitRelativePath || file.name;
+    const stableKey = path;
+    const recents = loadJSON('recentBooks', {});
+    return {
+      id: stableKey,
+      name: file.name.replace(/\.[^.]+$/, ''),
+      path,
+      key: stableKey,
+      type,
+      isArchive: archive,
+      file,
+      size: file.size,
+      modified: file.lastModified || 0,
+      progress: archive ? 0 : getProgress(stableKey) || getProgress(path),
+      lastOpened: recents[stableKey] || recents[path] || 0,
+      fromArchive: false
+    };
+  }
+
+  function importFiles(fileList, sourceLabel = 'файлов') {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    showLoading(`Сканирую ${sourceLabel}...`);
+    const books = files.filter(file => isSupportedEntry(file.name)).map(file => makeBook(file));
     state.books = books;
     state.rootBooks = books;
     state.archiveStack = [];
     state.currentViewBooks = null;
     hideLoading();
     renderLibrary();
-    toast(`Найдено: ${books.length} файлов (книги + архивы)`);
+    toast(`Найдено: ${books.length} поддерживаемых файлов`);
+  }
+
+  $('#folder-input').addEventListener('change', e => {
+    importFiles(e.target.files, 'папку и подпапки');
+    e.target.value = '';
   });
+  $('#files-input').addEventListener('change', e => {
+    importFiles(e.target.files, 'файлы');
+    e.target.value = '';
+  });
+
+  // Desktop fallback: drag/drop a folder or a collection of files.
+  const dropTarget = $('#welcome-card');
+  ['dragenter','dragover'].forEach(type => dropTarget.addEventListener(type, e => {
+    e.preventDefault(); dropTarget.classList.add('drag-over');
+  }));
+  ['dragleave','drop'].forEach(type => dropTarget.addEventListener(type, e => {
+    e.preventDefault(); dropTarget.classList.remove('drag-over');
+  }));
+  dropTarget.addEventListener('drop', e => importFiles(e.dataTransfer && e.dataTransfer.files, 'перетащенных файлов'));
 
   function getCurrentBooks() {
     return state.currentViewBooks || state.rootBooks || state.books;
@@ -296,7 +324,7 @@
 
     const sort = $('#sort-books').value;
     if (sort === 'favorites') {
-      list = list.filter(b => isFavorite(b.path));
+      list = list.filter(b => isFavorite(b.key || b.path));
       list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     } else if (sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     else if (sort === 'progress') list.sort((a, b) => (b.progress || 0) - (a.progress || 0));
@@ -306,6 +334,9 @@
     const totalRoot = (state.rootBooks || state.books).length;
     const inArch = state.archiveStack.length ? ` (в архиве)` : '';
     $('#library-stats').textContent = `Показано: ${list.length}${inArch} · всего в корне: ${totalRoot}`;
+    $('#hero-book-count').textContent = totalRoot;
+    $('#library-heading').textContent = state.archiveStack.length ? state.archiveStack[state.archiveStack.length - 1].name : 'Все книги';
+    $('#library-subheading').textContent = state.archiveStack.length ? 'Содержимое архива' : 'Локальная коллекция на этом устройстве';
 
     const grid = $('#books-grid');
     grid.innerHTML = '';
@@ -318,12 +349,12 @@
     }
 
     list.forEach(book => {
-      const bms = getBookmarks(book.path);
+      const bms = getBookmarks(book.key || book.path);
       const card = document.createElement('div');
       card.className = 'book-card' + (bms.length ? ' has-bookmark' : '');
       const icon = { pdf: '📄', epub: '📘', fb2: '📙', djvu: '📗', djv: '📗', txt: '📝', html: '🌐', htm: '🌐', zip: '📦', rar: '📦' }[book.type] || (book.isArchive ? '📦' : '📖');
-      const fav = isFavorite(book.path);
-      const tags = getTags(book.path);
+      const fav = isFavorite(book.key || book.path);
+      const tags = getTags(book.key || book.path);
       const tagsHtml = tags.length
         ? `<div class="book-tags">${tags.slice(0, 3).map(t => `<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`
         : '';
@@ -333,6 +364,7 @@
         <div class="book-info">
           <div class="book-name">${escapeHtml(book.name)}</div>
           <div class="book-meta">${(book.isArchive ? 'Архив ' : '') + book.type.toUpperCase()} · ${formatSize(book.size || 0)}</div>
+          ${book.path && book.path.includes('/') ? `<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path.split('/').slice(0, -1).join(' / '))}</div>` : ''}
           ${tagsHtml}
           <div class="book-progress"><div class="book-progress-bar" style="width:${Math.min(100, (book.progress || 0) * 100)}%"></div></div>
         </div>`;
@@ -340,7 +372,7 @@
       starBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
-        const now = toggleFavorite(book.path);
+        const now = toggleFavorite(book.key || book.path);
         starBtn.textContent = now ? '⭐' : '☆';
         toast(now ? 'В избранном ⭐' : 'Убрано из избранного');
       });
@@ -385,7 +417,7 @@
     showLoading('Открываю книгу...');
 
     const recents = loadJSON('recentBooks', {});
-    recents[book.path] = Date.now();
+    recents[book.key || book.path] = Date.now();
     saveJSON('recentBooks', recents);
     book.lastOpened = Date.now();
     incStat('booksOpened');
@@ -466,15 +498,18 @@
           const f = new File([blob], name, { type: blob.type || 'application/octet-stream' });
           const type = getExt(name);
           const isArch = isArchive(name);
+          const archivePath = `${fileOrBlob.name || 'archive'}::${relativePath}`;
           books.push({
-            id: uid(),
+            id: archivePath,
             name: name.replace(/\.[^.]+$/, ''),
             path: relativePath,
+            key: archivePath,
             type,
             isArchive: isArch,
             file: f,
             size: blob.size,
-            progress: isArch ? 0 : getProgress(relativePath),
+            modified: 0,
+            progress: isArch ? 0 : getProgress(archivePath) || getProgress(relativePath),
             lastOpened: 0,
             fromArchive: true
           });
@@ -528,7 +563,7 @@
         if (typeof total === 'number' && total > 0) {
           const prog = page / total;
           state.currentBook.progress = prog;
-          setProgress(state.currentBook.path, prog);
+          setProgress(state.currentBook.key || state.currentBook.path, prog);
           updateProgressBar();
         }
       } catch (e) {}
@@ -619,7 +654,7 @@
 
     const prog = num / state.pdfTotal;
     state.currentBook.progress = prog;
-    setProgress(state.currentBook.path, prog);
+    setProgress(state.currentBook.key || state.currentBook.path, prog);
     updateProgressBar();
     incStat('pagesRead');
   }
@@ -636,7 +671,7 @@
       width: '100%', height: '100%', flow: 'paginated'
     });
 
-    const saved = localStorage.getItem('epubLoc:' + book.path);
+    const saved = localStorage.getItem('epubLoc:' + (book.key || book.path));
     if (saved) await state.epubRendition.display(saved);
     else await state.epubRendition.display();
 
@@ -650,8 +685,8 @@
       try {
         const percent = loc.start.percentage || 0;
         state.currentBook.progress = percent;
-        setProgress(book.path, percent);
-        localStorage.setItem('epubLoc:' + book.path, loc.start.cfi);
+        setProgress(book.key || book.path, percent);
+        localStorage.setItem('epubLoc:' + (book.key || book.path), loc.start.cfi);
         $('#page-num').textContent = Math.round(percent * 100) + '%';
         $('#page-count').textContent = '100%';
         updateProgressBar();
@@ -716,7 +751,7 @@
   }
 
   function paginateText(text, book) {
-    const pageSize = 1600;
+    const pageSize = 2200;
     state.textPages = [];
     for (let i = 0; i < text.length; i += pageSize) {
       state.textPages.push(text.slice(i, i + pageSize));
@@ -740,7 +775,7 @@
     if (!skipProgress) {
       const prog = (state.textPage + 1) / state.textPages.length;
       state.currentBook.progress = prog;
-      setProgress(state.currentBook.path, prog);
+      setProgress(state.currentBook.key || state.currentBook.path, prog);
     }
     updateProgressBar();
   }
@@ -790,9 +825,10 @@
   }, { passive: true });
 
   // ===== TTS with sentence highlighting =====
-  const synth = window.speechSynthesis;
+  const synth = window.speechSynthesis || null;
 
   function loadVoices() {
+    if (!synth) return;
     state.voices = synth.getVoices();
     const sel = $('#tts-voice');
     sel.innerHTML = '';
@@ -810,7 +846,7 @@
       sel.appendChild(opt);
     });
   }
-  if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
+  if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
   loadVoices();
 
   function prepareTTS() { loadVoices(); }
@@ -850,6 +886,7 @@
   }
 
   function speakSentences(sentences, startIdx = 0) {
+    if (!synth) { toast('Озвучка недоступна в этом браузере'); return; }
     if (!sentences.length) {
       toast('Нет текста для озвучки');
       return;
@@ -893,7 +930,7 @@
     const text = state.ttsSentences[state.ttsSentenceIdx];
     highlightSentence(state.ttsSentenceIdx);
 
-    synth.cancel();
+    if (synth) synth.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const override = $('#tts-lang-override').value;
     const lang = override === 'auto' ? state.detectedLang : override;
@@ -942,7 +979,7 @@
   });
 
   $('#tts-stop').addEventListener('click', () => {
-    synth.cancel();
+    if (synth) synth.cancel();
     state.isSpeaking = false;
     $('#tts-play').textContent = '▶';
     clearHighlights();
@@ -972,7 +1009,7 @@
       if (state.sleepTimerId) clearTimeout(state.sleepTimerId);
       state.sleepTimerEnd = Date.now() + min * 60 * 1000;
       state.sleepTimerId = setTimeout(() => {
-        synth.cancel();
+        if (synth) synth.cancel();
         state.isSpeaking = false;
         $('#tts-play').textContent = '▶';
         clearHighlights();
@@ -987,10 +1024,10 @@
   // ===== Bookmarks =====
   $('#bookmark-btn').addEventListener('click', () => {
     state.pendingBookmark = {
-      path: state.currentBook.path,
+      path: state.currentBook.key || state.currentBook.path,
       type: state.currentType,
       page: state.currentType === 'pdf' ? state.pdfPage :
-            state.currentType === 'epub' ? (localStorage.getItem('epubLoc:' + state.currentBook.path) || '') :
+            state.currentType === 'epub' ? (localStorage.getItem('epubLoc:' + (state.currentBook.key || state.currentBook.path)) || '') :
             state.textPage,
       percent: state.currentBook.progress || 0,
       preview: (getCurrentText() || '').slice(0, 80),
@@ -1084,7 +1121,7 @@
 
   function renderBookmarksPanel() {
     const box = $('#bookmarks-content');
-    const list = getBookmarks(state.currentBook.path);
+    const list = getBookmarks(state.currentBook.key || state.currentBook.path);
     box.innerHTML = '';
     if (!list.length) {
       box.innerHTML = '<div class="empty-side">Нет закладок<br>Нажмите 🔖 чтобы добавить</div>';
@@ -1102,8 +1139,8 @@
       div.addEventListener('click', (e) => {
         if (e.target.classList.contains('bm-delete')) {
           e.stopPropagation();
-          const newList = getBookmarks(state.currentBook.path).filter(x => x.id !== bm.id);
-          setBookmarks(state.currentBook.path, newList);
+          const newList = getBookmarks(state.currentBook.key || state.currentBook.path).filter(x => x.id !== bm.id);
+          setBookmarks(state.currentBook.key || state.currentBook.path, newList);
           renderBookmarksPanel();
           toast('Закладка удалена');
           return;
@@ -1170,7 +1207,7 @@
         div.addEventListener('click', () => {
           // Approximate page
           if (['txt', 'html', 'htm', 'fb2'].includes(state.currentType) && state.textPages.length) {
-            const pageSize = 1600;
+            const pageSize = 2200;
             const page = Math.floor(r.idx / pageSize);
             state.textPage = Math.min(page, state.textPages.length - 1);
             renderTextPage();
@@ -1186,7 +1223,7 @@
   // ===== Settings modal =====
   function refreshFavTagsUI() {
     if (!state.currentBook) return;
-    const path = state.currentBook.path;
+    const path = state.currentBook.key || state.currentBook.path;
     $('#toggle-favorite').checked = isFavorite(path);
     const tags = getTags(path);
     const box = $('#current-tags');
@@ -1222,7 +1259,7 @@
 
   $('#toggle-favorite').addEventListener('change', () => {
     if (!state.currentBook) return;
-    const now = toggleFavorite(state.currentBook.path);
+    const now = toggleFavorite(state.currentBook.key || state.currentBook.path);
     toast(now ? 'Добавлено в избранное ⭐' : 'Убрано из избранного');
   });
 
@@ -1231,9 +1268,9 @@
       e.preventDefault();
       const val = $('#tag-input').value.trim();
       if (!val) return;
-      const tags = getTags(state.currentBook.path);
+      const tags = getTags(state.currentBook.key || state.currentBook.path);
       if (!tags.includes(val)) {
-        setTags(state.currentBook.path, [...tags, val]);
+        setTags(state.currentBook.key || state.currentBook.path, [...tags, val]);
         refreshFavTagsUI();
         toast('Тег добавлен');
       }
@@ -1290,6 +1327,9 @@
     if (document.visibilityState === 'visible' && $('#keep-screen-on') && $('#keep-screen-on').checked) {
       await requestWakeLock();
     }
+    if (document.visibilityState === 'visible' && synth && state.isSpeaking && synth.paused) {
+      try { synth.resume(); } catch (e) {}
+    }
   });
 
   // ===== Stats =====
@@ -1314,7 +1354,7 @@
       if (mins > 0.1) addReadingTime(mins);
       state.readingStart = null;
     }
-    synth.cancel();
+    if (synth) synth.cancel();
     state.isSpeaking = false;
     if (state.epubBook) {
       try { state.epubBook.destroy(); } catch (e) {}
