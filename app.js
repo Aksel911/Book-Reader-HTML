@@ -581,6 +581,218 @@
     toast('История сессий очищена (прогресс книг сохранён)');
   }
 
+  // ===== Library deduplication (in-app only; never deletes disk files) =====
+  const DUPLICATE_NAME_RE = /(?:\s*[-_.]?\s*copy(?:\s*\(\d+\))?|\s*[-_.]?\s*duplicate(?:\s*\(\d+\))?|\s*\(\s*copy\s*\)|\s*\(\s*\d+\s*\)|\s*[-_.]\s*copy\s*\d*|\s*[-_.]\s*dup(?:licate)?\s*\d*)$/i;
+
+  function filenameQuality(book) {
+    const name = (book.name || book.path || '').replace(/\.[^.]+$/, '');
+    let score = 100;
+    if (DUPLICATE_NAME_RE.test(name)) score -= 25;
+    if (/\b(copy|duplicate|dup)\b/i.test(name)) score -= 20;
+    if (/\(\d+\)$/.test(name)) score -= 15;
+    if (/^(untitled|document|file|scan|book)\s*\d*$/i.test(name.trim())) score -= 18;
+    const alnum = (name.match(/[\p{L}\p{N}]/gu) || []).length;
+    if (alnum >= 10) score += 12;
+    if (name.length < 3) score -= 20;
+    // Prefer files with more progress / favorites
+    const key = book.key || book.path;
+    if (isFavorite(key)) score += 8;
+    score += Math.round((book.progress || getProgress(key) || 0) * 10);
+    // Prefer shallower paths
+    score -= (String(book.path || '').split('/').length) * 0.5;
+    return score;
+  }
+
+  function normalizeSemanticText(text) {
+    let t = String(text || '');
+    try { t = t.replace(/&[a-z]+;/gi, ' '); } catch (_) {}
+    t = t.toLowerCase().replace(/[\u200b-\u200f\u202a-\u202e\ufeff]/g, '');
+    t = t.replace(/\s+/g, ' ').trim();
+    return t;
+  }
+
+  function textFingerprint(text) {
+    const normalized = normalizeSemanticText(text);
+    if (normalized.length < 200) return null;
+    const tokens = normalized.match(/[0-9a-zа-яё]+/gi) || [];
+    const tokenText = tokens.join(' ');
+    if (tokenText.length < 200) return null;
+    return { digest: simpleHash(tokenText), length: tokenText.length };
+  }
+
+  function simpleHash(str) {
+    // FNV-1a 64-bit-ish hex for fast client-side fingerprinting
+    let h1 = 0x811c9dc5, h2 = 0x811c9dc5 ^ 0xabcdef;
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193);
+      h2 = Math.imul(h2 ^ c, 0x01000193) ^ (h1 >>> 16);
+    }
+    return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
+  }
+
+  async function sha256Buffer(buf) {
+    if (crypto?.subtle?.digest) {
+      const hash = await crypto.subtle.digest('SHA-256', buf);
+      return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    // Fallback: sample-based hash for huge files if SubtleCrypto missing
+    const u8 = new Uint8Array(buf);
+    let s = u8.length + ':';
+    const step = Math.max(1, Math.floor(u8.length / 64));
+    for (let i = 0; i < u8.length; i += step) s += u8[i] + ',';
+    return simpleHash(s);
+  }
+
+  async function extractBookTextSample(book) {
+    if (!book?.file) return null;
+    const type = (book.type || '').toLowerCase();
+    try {
+      if (['txt', 'html', 'htm', 'fb2', 'md', 'csv', 'json'].includes(type)) {
+        const text = await book.file.text();
+        return text.slice(0, 400000);
+      }
+      if (type === 'epub' && typeof JSZip !== 'undefined') {
+        const buf = await book.file.arrayBuffer();
+        const zip = await JSZip.loadAsync(buf);
+        const parts = [];
+        const names = Object.keys(zip.files).filter(n => /\.(xhtml|html|htm|xml)$/i.test(n)).slice(0, 40);
+        for (const n of names) {
+          try {
+            let raw = await zip.files[n].async('string');
+            raw = raw.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+              .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+              .replace(/<[^>]+>/g, ' ');
+            parts.push(raw);
+            if (parts.join(' ').length > 300000) break;
+          } catch (_) {}
+        }
+        return parts.join('\n');
+      }
+      // PDF: first few pages via pdf.js if loaded
+      if (type === 'pdf' && typeof pdfjsLib !== 'undefined') {
+        const buf = await book.file.arrayBuffer();
+        const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+        const max = Math.min(doc.numPages, 8);
+        const parts = [];
+        for (let i = 1; i <= max; i++) {
+          const page = await doc.getPage(i);
+          const tc = await page.getTextContent();
+          parts.push(tc.items.map(it => it.str).join(' '));
+        }
+        try { doc.destroy?.(); } catch (_) {}
+        return parts.join('\n');
+      }
+    } catch (e) {
+      console.debug('extractBookTextSample', book.name, e);
+    }
+    return null;
+  }
+
+  async function findAndRemoveDuplicates() {
+    const books = (state.rootBooks || state.books || []).filter(b => b && b.file && !b.fromArchive);
+    if (books.length < 2) {
+      toast('Сначала загрузите библиотеку (2+ книги)');
+      return { removed: 0, groups: 0 };
+    }
+
+    showLoading('Ищу дубликаты…');
+    const resultEl = $('#dedupe-result');
+    if (resultEl) resultEl.textContent = 'Сканирование…';
+
+    const toRemove = new Set(); // keys
+    const keepMap = new Map(); // key -> book kept
+    let groups = 0;
+
+    // 1) Exact SHA-256 (group by size first for speed)
+    const bySize = new Map();
+    for (const b of books) {
+      const sz = b.size || b.file?.size || 0;
+      if (!bySize.has(sz)) bySize.set(sz, []);
+      bySize.get(sz).push(b);
+    }
+    for (const [, list] of bySize) {
+      if (list.length < 2) continue;
+      const byHash = new Map();
+      for (const b of list) {
+        try {
+          const buf = await b.file.arrayBuffer();
+          const h = await sha256Buffer(buf);
+          if (!byHash.has(h)) byHash.set(h, []);
+          byHash.get(h).push(b);
+        } catch (e) {
+          console.debug('hash fail', b.name, e);
+        }
+      }
+      for (const group of byHash.values()) {
+        if (group.length < 2) continue;
+        groups++;
+        group.sort((a, b) => filenameQuality(b) - filenameQuality(a));
+        const keep = group[0];
+        keepMap.set(keep.key || keep.path, keep);
+        for (let i = 1; i < group.length; i++) toRemove.add(group[i].key || group[i].path);
+      }
+    }
+
+    // 2) Smart semantic (text formats + epub + pdf sample)
+    const remaining = books.filter(b => !toRemove.has(b.key || b.path));
+    const smartBuckets = new Map();
+    for (let i = 0; i < remaining.length; i++) {
+      const b = remaining[i];
+      if (i % 8 === 0) {
+        showLoading(`Умный поиск… ${i + 1}/${remaining.length}`);
+        await new Promise(r => setTimeout(r, 0)); // yield UI
+      }
+      const size = b.size || b.file?.size || 0;
+      if (size < 2000) continue;
+      const type = (b.type || '').toLowerCase();
+      if (!['txt', 'html', 'htm', 'fb2', 'epub', 'pdf', 'md'].includes(type)) continue;
+      try {
+        const text = await extractBookTextSample(b);
+        const fp = text ? textFingerprint(text) : null;
+        if (!fp) continue;
+        const bucketKey = fp.digest + ':' + Math.round(fp.length / 50);
+        if (!smartBuckets.has(bucketKey)) smartBuckets.set(bucketKey, []);
+        smartBuckets.get(bucketKey).push({ book: b, length: fp.length });
+      } catch (_) {}
+    }
+    for (const items of smartBuckets.values()) {
+      if (items.length < 2) continue;
+      // length within 1%
+      const base = items[0].length;
+      const matched = items.filter(x => {
+        const mx = Math.max(base, x.length);
+        return mx && Math.abs(base - x.length) / mx <= 0.02;
+      });
+      if (matched.length < 2) continue;
+      const group = matched.map(x => x.book);
+      // skip if already exact-dup handled
+      const fresh = group.filter(b => !toRemove.has(b.key || b.path));
+      if (fresh.length < 2) continue;
+      groups++;
+      fresh.sort((a, b) => filenameQuality(b) - filenameQuality(a));
+      for (let i = 1; i < fresh.length; i++) toRemove.add(fresh[i].key || fresh[i].path);
+    }
+
+    // Apply removal from in-memory library only
+    if (toRemove.size) {
+      const filterOut = (arr) => (arr || []).filter(b => !toRemove.has(b.key || b.path));
+      state.books = filterOut(state.books);
+      state.rootBooks = filterOut(state.rootBooks);
+      if (state.currentViewBooks) state.currentViewBooks = filterOut(state.currentViewBooks);
+      saveLibraryCatalog(state.rootBooks || state.books, 'после очистки дубликатов');
+      renderLibrary($('#search-books')?.value || '');
+    }
+
+    hideLoading();
+    const msg = toRemove.size
+      ? `Убрано дубликатов: ${toRemove.size} (групп: ${groups}). Файлы на диске не удалялись.`
+      : 'Дубликатов не найдено';
+    if (resultEl) resultEl.textContent = msg;
+    toast(msg);
+    return { removed: toRemove.size, groups };
+  }
+
   function formatRelativeTime(ts) {
     if (!ts) return '';
     const diff = Date.now() - ts;
@@ -2509,6 +2721,27 @@
     if (e.target === $('#modal-overlay')) $('#modal-overlay').classList.add('hidden');
   });
 
+  const dedupeBtn = $('#dedupe-library-btn');
+  if (dedupeBtn) {
+    dedupeBtn.addEventListener('click', async () => {
+      dedupeBtn.disabled = true;
+      try {
+        await findAndRemoveDuplicates();
+      } finally {
+        dedupeBtn.disabled = false;
+      }
+    });
+  }
+
+  // Sticky toolbar visual polish when scrolled
+  const libMain = document.querySelector('.library-main');
+  const libToolbar = $('#library-toolbar');
+  if (libMain && libToolbar) {
+    libMain.addEventListener('scroll', () => {
+      libToolbar.classList.toggle('is-stuck', libMain.scrollTop > 24);
+    }, { passive: true });
+  }
+
   $$('.theme-opt').forEach(btn => {
     btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
   });
@@ -2670,5 +2903,5 @@
     }, true);
   }
 
-  console.log('Умный Читатель v6.6 готов 📚✨');
+  console.log('Умный Читатель v6.7 готов 📚✨');
 })();

@@ -82,17 +82,16 @@
           </div>
           <div class="hero-stat"><strong id="hero-book-count">0</strong><span>файлов</span></div>
         </section>
-        <div class="library-toolbar">
+        <div class="library-toolbar" id="library-toolbar">
           <div id="folder-breadcrumb" class="folder-breadcrumb hidden"></div>
           <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
-          <div class="search-box">
-            <input type="search" id="search-books" placeholder="🔍 Поиск по названию или пути...">
-          </div>
-          <div class="toolbar-row">
-            <div class="stats" id="library-stats"></div>
+          <div class="toolbar-compact">
+            <div class="search-box">
+              <input type="search" id="search-books" placeholder="🔍 Поиск..." enterkeyhint="search">
+            </div>
             <div class="toolbar-actions">
               <select id="filter-type" class="sort-select" aria-label="Формат">
-                <option value="all">Все форматы</option>
+                <option value="all">Формат</option>
                 <option value="pdf">PDF</option>
                 <option value="epub">EPUB</option>
                 <option value="fb2">FB2</option>
@@ -102,14 +101,14 @@
                 <option value="archive">Архивы</option>
               </select>
               <select id="filter-status" class="sort-select" aria-label="Статус">
-                <option value="all">Любой статус</option>
+                <option value="all">Статус</option>
                 <option value="unread">Не начато</option>
                 <option value="reading">Читаю</option>
                 <option value="finished">Прочитано</option>
                 <option value="favorites">⭐ Избранное</option>
               </select>
-              <select id="sort-books" class="sort-select">
-                <option value="name">Название</option>
+              <select id="sort-books" class="sort-select" aria-label="Сортировка">
+                <option value="name">А–Я</option>
                 <option value="progress">Прогресс</option>
                 <option value="type">Формат</option>
                 <option value="recent">Недавние</option>
@@ -117,7 +116,10 @@
               </select>
             </div>
           </div>
-          <div id="filter-chips" class="filter-chips"></div>
+          <div class="toolbar-meta-row">
+            <div class="stats" id="library-stats"></div>
+            <div id="filter-chips" class="filter-chips"></div>
+          </div>
         </div>
         <div id="books-grid" class="books-grid"></div>
         <div class="library-footer-btns">
@@ -303,6 +305,13 @@
           <input type="text" id="tag-input" placeholder="Новый тег (Enter)" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);margin-bottom:8px">
           <div id="current-tags" class="tag-editor"></div>
         </div>
+      </div>
+
+      <div class="setting-group" id="library-tools-section">
+        <label>Библиотека</label>
+        <p class="settings-note-inline">Поиск точных дубликатов (SHA-256) и «умных» совпадений по тексту (TXT/FB2/HTML/EPUB). Удаляются только из списка в приложении — файлы на диске не трогаются.</p>
+        <button type="button" id="dedupe-library-btn" class="secondary-btn full" style="margin-top:8px">🧹 Найти и убрать дубликаты</button>
+        <div id="dedupe-result" class="settings-note-inline" style="margin-top:8px"></div>
       </div>
 
       <button id="close-modal" class="primary-btn">Готово</button>
