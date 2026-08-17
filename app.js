@@ -43,7 +43,9 @@
     // Archive navigation
     archiveStack: [],          // [{name, books: [...], path}]
     currentViewBooks: null,    // null = root library
-    rootBooks: []              // original folder books
+    rootBooks: [],             // original imported files
+    folderStack: [],            // actual imported-folder navigation [{name,path}]
+    libraryRenderLimit: 60
   };
 
   // ===== DOM helpers =====
@@ -280,6 +282,7 @@
     state.books = books;
     state.rootBooks = books;
     state.archiveStack = [];
+    state.folderStack = [];
     state.currentViewBooks = null;
     hideLoading();
     renderLibrary();
@@ -307,6 +310,54 @@
 
   function getCurrentBooks() {
     return state.currentViewBooks || state.rootBooks || state.books;
+  }
+
+  function normalizePath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  }
+
+  function getFolderPrefix() {
+    return state.folderStack.length ? state.folderStack[state.folderStack.length - 1].path : '';
+  }
+
+  function getFolderItems(books) {
+    const prefix = getFolderPrefix();
+    const folders = new Map();
+    const files = [];
+    for (const book of books) {
+      const path = normalizePath(book.path);
+      if (prefix && !(path === prefix || path.startsWith(prefix + '/'))) continue;
+      const rest = prefix ? path.slice(prefix.length).replace(/^\//, '') : path;
+      if (!rest) continue;
+      const parts = rest.split('/');
+      if (parts.length > 1) {
+        const folderName = parts[0];
+        const folderPath = prefix ? `${prefix}/${folderName}` : folderName;
+        if (!folders.has(folderPath)) folders.set(folderPath, { type:'folder', name:folderName, path:folderPath, count:0 });
+        folders.get(folderPath).count++;
+      } else {
+        files.push(book);
+      }
+    }
+    return { folders:[...folders.values()].sort((a,b)=>a.name.localeCompare(b.name,'ru')), files };
+  }
+
+  function renderFolderBreadcrumb() {
+    const el = $('#folder-breadcrumb');
+    if (!el) return;
+    if (!state.folderStack.length) { el.classList.add('hidden'); el.innerHTML=''; return; }
+    el.classList.remove('hidden');
+    let html = '<button class="folder-crumb root" data-level="-1">⌂ Библиотека</button>';
+    state.folderStack.forEach((f,i)=> {
+      html += '<span class="folder-sep">/</span>';
+      html += `<button class="folder-crumb ${i===state.folderStack.length-1?'current':''}" data-level="${i}">${escapeHtml(f.name)}</button>`;
+    });
+    el.innerHTML=html;
+    el.querySelectorAll('.folder-crumb').forEach(btn=>btn.addEventListener('click',()=>{
+      const level=Number(btn.dataset.level);
+      if(level<0) state.folderStack=[]; else state.folderStack=state.folderStack.slice(0,level+1);
+      renderLibrary($('#search-books').value);
+    }));
   }
 
   function renderBreadcrumb() {
@@ -339,9 +390,118 @@
     });
   }
 
+  // ---- Low-cost, lazy PDF previews ----
+  // Only a tiny number of pages are rendered at once. Preview JPEGs are cached in IndexedDB
+  // so reopening a 474-book library does not re-render every PDF.
   const PREVIEW_CACHE = new Map();
-  let previewObserver = null;
   const PREVIEW_PENDING = new Set();
+  const PREVIEW_QUEUE = [];
+  let previewWorkers = 0;
+  const PREVIEW_CONCURRENCY = 2;
+  let previewObserver = null;
+  let previewDBPromise = null;
+
+  function openPreviewDB() {
+    if (!('indexedDB' in window)) return Promise.resolve(null);
+    if (previewDBPromise) return previewDBPromise;
+    previewDBPromise = new Promise(resolve => {
+      const req = indexedDB.open('book-reader-previews', 1);
+      req.onupgradeneeded = () => {
+        try { req.result.createObjectStore('covers'); } catch (e) {}
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    return previewDBPromise;
+  }
+  function previewDBKey(book) { return `${book.key || book.path}::${book.size || 0}::${book.modified || 0}`; }
+  async function getCachedPreview(book) {
+    const key = previewDBKey(book);
+    if (PREVIEW_CACHE.has(key)) return PREVIEW_CACHE.get(key);
+    const db = await openPreviewDB();
+    if (!db) return null;
+    return new Promise(resolve => {
+      try {
+        const req = db.transaction('covers','readonly').objectStore('covers').get(key);
+        req.onsuccess = () => { if (req.result) PREVIEW_CACHE.set(key, req.result); resolve(req.result || null); };
+        req.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+  }
+  async function setCachedPreview(book, blob) {
+    const key = previewDBKey(book);
+    PREVIEW_CACHE.set(key, blob);
+    const db = await openPreviewDB();
+    if (!db) return;
+    try {
+      db.transaction('covers','readwrite').objectStore('covers').put(blob, key);
+    } catch (e) {}
+  }
+  async function drainPreviewQueue() {
+    while (previewWorkers < PREVIEW_CONCURRENCY && PREVIEW_QUEUE.length) {
+      const job = PREVIEW_QUEUE.shift();
+      previewWorkers++;
+      try { await hydratePreviewNow(job.book, job.card); } catch (e) {}
+      previewWorkers--;
+      if (PREVIEW_QUEUE.length) drainPreviewQueue();
+    }
+  }
+  async function hydratePreviewNow(book, card) {
+    const host = card.querySelector('.book-cover');
+    if (!host) return;
+    const cached = await getCachedPreview(book);
+    if (cached) {
+      const url = URL.createObjectURL(cached);
+      host.classList.add('has-preview');
+      host.style.backgroundImage = `linear-gradient(180deg,rgba(4,4,6,.02),rgba(4,4,6,.50)),url(${url})`;
+      host.dataset.previewUrl = url;
+      return;
+    }
+    if (!window.pdfjsLib) return;
+    const buf = await book.file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({data:buf, disableAutoFetch:true, disableStream:true}).promise;
+    try {
+      const page = await doc.getPage(1);
+      const base = page.getViewport({scale:1});
+      const targetWidth = 180;
+      const scale = Math.min(0.55, targetWidth / Math.max(1, base.width));
+      const vp = page.getViewport({scale});
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+      await page.render({canvasContext:canvas.getContext('2d',{alpha:false}), viewport:vp}).promise;
+      const blob = await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.62));
+      if (!blob) return;
+      await setCachedPreview(book, blob);
+      if (card.isConnected) {
+        const url = URL.createObjectURL(blob);
+        host.classList.add('has-preview');
+        host.style.backgroundImage = `linear-gradient(180deg,rgba(4,4,6,.02),rgba(4,4,6,.50)),url(${url})`;
+        host.dataset.previewUrl = url;
+      }
+      canvas.width=1; canvas.height=1;
+    } finally { if (doc.destroy) await doc.destroy(); }
+  }
+  function queuePreview(book, card) {
+    if (book.type !== 'pdf' || PREVIEW_PENDING.has(book.key||book.path)) return;
+    PREVIEW_PENDING.add(book.key||book.path);
+    PREVIEW_QUEUE.push({book,card});
+    drainPreviewQueue().finally(()=>PREVIEW_PENDING.delete(book.key||book.path));
+  }
+  function observePreview(card, book) {
+    if (book.type !== 'pdf') return;
+    if (!previewObserver) {
+      previewObserver = new IntersectionObserver(entries=>entries.forEach(entry=>{
+        if (!entry.isIntersecting) return;
+        previewObserver.unobserve(entry.target);
+        const key=entry.target.dataset.previewKey;
+        const source=(state.rootBooks||state.books).find(b=>(b.key||b.path)===key) || getCurrentBooks().find(b=>(b.key||b.path)===key);
+        if(source) queuePreview(source, entry.target);
+      }), {rootMargin:'100px 0px', threshold:0.01});
+    }
+    card.dataset.previewKey=book.key||book.path;
+    previewObserver.observe(card);
+  }
+
   function getBookStatus(book) {
     const p = Number(book.progress || 0);
     if (p >= 0.98) return 'finished';
@@ -367,120 +527,78 @@
     </div>`;
   }
 
-  async function hydratePreview(book, card) {
-    if (book.type !== 'pdf') return;
-    const host = card.querySelector('.book-cover');
-    if (!host || PREVIEW_PENDING.has(book.key)) return;
-    if (PREVIEW_CACHE.has(book.key)) {
-      host.style.backgroundImage = `linear-gradient(180deg,rgba(4,4,6,.03),rgba(4,4,6,.46)),url(${PREVIEW_CACHE.get(book.key)})`;
-      return;
-    }
-    PREVIEW_PENDING.add(book.key);
-    try {
-      if (!window.pdfjsLib) return;
-      const buf = await book.file.arrayBuffer();
-      const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-      const page = await doc.getPage(1);
-      const base = page.getViewport({ scale: 1 });
-      const scale = Math.min(0.62, 180 / base.height);
-      const vp = page.getViewport({ scale });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-      const url = canvas.toDataURL('image/jpeg', 0.68);
-      PREVIEW_CACHE.set(book.key, url);
-      if (card.isConnected) host.style.backgroundImage = `linear-gradient(180deg,rgba(4,4,6,.03),rgba(4,4,6,.46)),url(${url})`;
-      if (doc.destroy) doc.destroy();
-    } catch (e) {
-      console.debug('Preview fallback', book.name, e?.message || e);
-    } finally {
-      PREVIEW_PENDING.delete(book.key);
-    }
-  }
-
-  function observePreview(card, book) {
-    if (book.type !== 'pdf') return;
-    if (!previewObserver) {
-      previewObserver = new IntersectionObserver(entries => {
-        entries.forEach(entry => {
-          if (!entry.isIntersecting) return;
-          const el = entry.target;
-          previewObserver.unobserve(el);
-          const key = el.dataset.previewKey;
-          const source = (state.rootBooks || state.books).find(b => (b.key || b.path) === key) || getCurrentBooks().find(b => (b.key || b.path) === key);
-          if (source) hydratePreview(source, el);
-        });
-      }, { rootMargin:'500px 0px', threshold:0.01 });
-    }
-    card.dataset.previewKey = book.key || book.path;
-    previewObserver.observe(card);
-  }
-
+  let loadMoreObserver = null;
   function renderLibrary(filter = '') {
     $('#welcome-card').classList.add('hidden');
     $('#library-content').classList.remove('hidden');
-    renderBreadcrumb();
+    renderFolderBreadcrumb();
+    if (!state.archiveStack.length) { $('#archive-breadcrumb').classList.add('hidden'); } else { renderBreadcrumb(); }
     const source = getCurrentBooks();
     const q = filter.trim().toLowerCase();
     const type = $('#filter-type').value;
     const status = $('#filter-status').value;
-    let list = source.filter(b => {
-      const matchesQ = !q || b.name.toLowerCase().includes(q) || (b.path || '').toLowerCase().includes(q);
-      const matchesType = type === 'all' || (type === 'archive' ? b.isArchive : (b.type === type || (type === 'djvu' && b.type === 'djv') || (type === 'html' && b.type === 'htm')));
-      const s = getBookStatus(b);
-      const matchesStatus = status === 'all' || (status === 'favorites' ? isFavorite(b.key || b.path) : s === status);
-      return matchesQ && matchesType && matchesStatus;
+    const folderView = !state.archiveStack.length && !state.currentViewBooks;
+    const folderData = folderView && !q ? getFolderItems(source) : {folders:[], files:source};
+    let list = folderData.files.filter(b => {
+      const matchesQ=!q || b.name.toLowerCase().includes(q) || (b.path||'').toLowerCase().includes(q);
+      const matchesType=type==='all' || (type==='archive'?b.isArchive:(b.type===type || (type==='djvu'&&b.type==='djv') || (type==='html'&&b.type==='htm')));
+      const s=getBookStatus(b);
+      const matchesStatus=status==='all' || (status==='favorites'?isFavorite(b.key||b.path):s===status);
+      return matchesQ&&matchesType&&matchesStatus;
     });
-    const sort = $('#sort-books').value;
-    if (sort === 'name') list.sort((a,b) => a.name.localeCompare(b.name,'ru'));
-    else if (sort === 'progress') list.sort((a,b) => (b.progress||0)-(a.progress||0));
-    else if (sort === 'type') list.sort((a,b) => typeLabel(a.type).localeCompare(typeLabel(b.type)) || a.name.localeCompare(b.name,'ru'));
-    else if (sort === 'recent') list.sort((a,b) => (b.lastOpened||0)-(a.lastOpened||0));
-    else if (sort === 'size') list.sort((a,b) => (b.size||0)-(a.size||0));
+    const sort=$('#sort-books').value;
+    if(sort==='name') list.sort((a,b)=>a.name.localeCompare(b.name,'ru'));
+    else if(sort==='progress') list.sort((a,b)=>(b.progress||0)-(a.progress||0));
+    else if(sort==='type') list.sort((a,b)=>typeLabel(a.type).localeCompare(typeLabel(b.type))||a.name.localeCompare(b.name,'ru'));
+    else if(sort==='recent') list.sort((a,b)=>(b.lastOpened||0)-(a.lastOpened||0));
+    else if(sort==='size') list.sort((a,b)=>(b.size||0)-(a.size||0));
 
-    const totalRoot = (state.rootBooks || state.books).length;
-    $('#library-stats').textContent = `Показано ${list.length} из ${totalRoot}`;
-    $('#hero-book-count').textContent = totalRoot;
-    $('#library-heading').textContent = state.archiveStack.length ? state.archiveStack[state.archiveStack.length - 1].name : 'Ваша библиотека';
-    $('#library-subheading').textContent = state.archiveStack.length ? 'Содержимое архива' : 'Все книги остаются на устройстве';
+    const rootFiles=(state.rootBooks||state.books).length;
+    const visibleFolders=folderData.folders.filter(f=>!q || f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
+    $('#library-stats').textContent=`${state.folderStack.length?'В папке: ':''}${visibleFolders.length+list.length} элементов`;
+    $('#hero-book-count').textContent=state.folderStack.length?`${list.length}`:rootFiles;
+    $('#library-heading').textContent=state.folderStack.length?state.folderStack[state.folderStack.length-1].name:'Ваша библиотека';
+    $('#library-subheading').textContent=state.folderStack.length?'Книги и подпапки внутри этой папки':'Книги сгруппированы по папкам — откройте папку, чтобы увидеть содержимое';
 
-    const chipBox = $('#filter-chips');
-    chipBox.innerHTML = '';
-    const active = [];
-    if (q) active.push(`Поиск: ${escapeHtml(filter)}`);
-    if (type !== 'all') active.push(type === 'archive' ? 'Архивы' : typeLabel(type));
-    if (status !== 'all') active.push(status === 'favorites' ? 'Избранное' : status === 'reading' ? 'В процессе' : status === 'finished' ? 'Прочитано' : 'Не начато');
-    active.forEach(t => { const c=document.createElement('span'); c.className='filter-chip'; c.textContent=t; chipBox.appendChild(c); });
+    const chipBox=$('#filter-chips'); chipBox.innerHTML='';
+    const active=[];
+    if(q) active.push(`Поиск: ${filter}`);
+    if(type!=='all') active.push(type==='archive'?'Архивы':typeLabel(type));
+    if(status!=='all') active.push(status==='favorites'?'Избранное':status==='reading'?'В процессе':status==='finished'?'Прочитано':'Не начато');
+    active.forEach(t=>{const c=document.createElement('span');c.className='filter-chip';c.textContent=t;chipBox.appendChild(c);});
 
-    const grid = $('#books-grid');
-    grid.innerHTML = '';
-    if (!list.length) {
-      grid.innerHTML = `<div class="empty-library"><div class="empty-icon">⌕</div><h3>Ничего не найдено</h3><p>Измените поиск или фильтры, либо добавьте ещё книги.</p></div>`;
+    const grid=$('#books-grid'); grid.innerHTML='';
+    if(!visibleFolders.length && !list.length){
+      grid.innerHTML=`<div class="empty-library"><div class="empty-icon">⌕</div><h3>Ничего не найдено</h3><p>Измените поиск или фильтры, либо добавьте ещё книги.</p></div>`;
       return;
     }
-    list.forEach(book => {
-      const key = book.key || book.path;
-      const card = document.createElement('article');
-      const st = getBookStatus(book);
-      card.className = `book-card status-${st}` + (getBookmarks(key).length ? ' has-bookmark' : '');
-      const fav = isFavorite(key);
-      const tags = getTags(key);
-      const progress = Math.min(100, Math.round((book.progress || 0) * 100));
-      card.innerHTML = `
-        <button type="button" class="fav-star" title="${fav ? 'Убрать из избранного':'В избранное'}">${fav ? '★':'☆'}</button>
-        ${bookCoverMarkup(book)}
-        <div class="book-info">
-          <div class="book-name" title="${escapeHtml(book.name)}">${escapeHtml(book.name)}</div>
-          <div class="book-meta"><span>${typeLabel(book.type)}</span><span>•</span><span>${formatSize(book.size || 0)}</span></div>
-          ${book.path && book.path.includes('/') ? `<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path.split('/').slice(0,-1).join(' / '))}</div>` : ''}
-          ${tags.length ? `<div class="book-tags">${tags.slice(0,2).map(t=>`<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}
-          <div class="book-progress"><div class="book-progress-bar" style="width:${progress}%"></div></div>
-        </div>`;
-      card.querySelector('.fav-star').addEventListener('click', e => { e.stopPropagation(); const now=toggleFavorite(key); e.currentTarget.textContent=now?'★':'☆'; renderLibrary($('#search-books').value); });
-      card.addEventListener('click', () => openBook(book));
+    // Folders are always rendered first and cost almost nothing.
+    for(const folder of visibleFolders){
+      const card=document.createElement('article');
+      card.className='folder-card';
+      card.innerHTML=`<div class="folder-icon">▱</div><div class="folder-card-body"><div class="folder-name">${escapeHtml(folder.name)}</div><div class="folder-meta">${folder.count} ${folder.count===1?'файл':'файлов'}</div></div><div class="folder-arrow">›</div>`;
+      card.addEventListener('click',()=>{ state.folderStack.push({name:folder.name,path:folder.path}); renderLibrary($('#search-books').value); });
       grid.appendChild(card);
-      observePreview(card, book);
-    });
+    }
+
+    state.libraryRenderLimit=Math.max(60,state.libraryRenderLimit||60);
+    const renderSlice=()=>{
+      const oldMore=grid.querySelector('.books-load-more'); if(oldMore) oldMore.remove();
+      const end=Math.min(state.libraryRenderLimit,list.length);
+      for(const book of list.slice(0,end)){
+        const key=book.key||book.path; const card=document.createElement('article'); const st=getBookStatus(book);
+        card.className=`book-card status-${st}`+(getBookmarks(key).length?' has-bookmark':'');
+        const fav=isFavorite(key); const tags=getTags(key); const progress=Math.min(100,Math.round((book.progress||0)*100));
+        card.innerHTML=`<button type="button" class="fav-star" title="${fav?'Убрать из избранного':'В избранное'}">${fav?'★':'☆'}</button>${bookCoverMarkup(book)}<div class="book-info"><div class="book-name" title="${escapeHtml(book.name)}">${escapeHtml(book.name)}</div><div class="book-meta"><span>${typeLabel(book.type)}</span><span>•</span><span>${formatSize(book.size||0)}</span></div>${book.path&&book.path.includes('/')?`<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path.split('/').slice(0,-1).join(' / '))}</div>`:''}${tags.length?`<div class="book-tags">${tags.slice(0,2).map(t=>`<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}<div class="book-progress"><div class="book-progress-bar" style="width:${progress}%"></div></div></div>`;
+        card.querySelector('.fav-star').addEventListener('click',e=>{e.stopPropagation();toggleFavorite(key);renderLibrary($('#search-books').value);});
+        card.addEventListener('click',()=>openBook(book)); grid.appendChild(card); observePreview(card,book);
+      }
+      if(end<list.length){
+        const sentinel=document.createElement('div'); sentinel.className='books-load-more'; sentinel.innerHTML=`<button type="button">Показать ещё · ${Math.min(60,list.length-end)} книг</button>`; grid.appendChild(sentinel);
+        sentinel.querySelector('button').addEventListener('click',()=>{state.libraryRenderLimit+=60;renderSlice();});
+      }
+    };
+    renderSlice();
   }
 
   $('#search-books').addEventListener('input', () => renderLibrary($('#search-books').value));
@@ -1001,48 +1119,72 @@
     }).join('');
   }
 
-  function clearHighlights() {
-    const el = $('#text-reader');
-    if (el) el.textContent = state.textContent;
-    document.querySelectorAll('#pdf-text-layer .tts-pdf-active').forEach(x => x.classList.remove('tts-pdf-active'));
-    hideLiveCaption();
-  }
-
-  function highlightSentence(idx, wordIdx = -1) {
-    const item = state.ttsSentences[idx];
-    if (!item) return;
-    showLiveCaption(item.text, wordIdx);
-    if (state.currentType === 'pdf') {
-      const layer = document.querySelector('#pdf-text-layer');
-      if (layer) {
-        layer.querySelectorAll('.tts-pdf-active').forEach(x => x.classList.remove('tts-pdf-active'));
-        const tokens = speechFriendlyText(item.text).toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 5);
-        layer.querySelectorAll('span').forEach(span => {
-          const t = (span.textContent || '').toLowerCase();
-          if (tokens.some(token => t.includes(token.replace(/[^\p{L}\p{N}]+/gu,'')))) span.classList.add('tts-pdf-active');
-        });
-      }
-    }
-    if (!state.highlightTTS || !['txt','html','htm','fb2'].includes(state.currentType)) return;
-    const el = $('#text-reader');
+  function clearTextReaderMark(el) {
     if (!el) return;
-    let html = '';
-    state.ttsSentences.forEach((entry,i) => {
-      const s = entry.text;
-      if (i !== idx) { html += escapeHtml(s) + ' '; return; }
-      const words = s.split(/(\s+)/);
-      let wi = 0;
-      html += words.map(part => {
-        if (/\s+/.test(part)) return part;
-        const cls = wi === wordIdx ? 'tts-highlight active tts-word-active' : 'tts-highlight active';
-        wi++;
-        return `<span class="${cls}">${escapeHtml(part)}</span>`;
-      }).join('');
-      html += ' ';
-    });
-    el.innerHTML = html;
-    const active = el.querySelector('.tts-word-active') || el.querySelector('.tts-highlight.active');
-    if (active) active.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
+    const marks=el.querySelectorAll('span.tts-book-highlight');
+    marks.forEach(mark=>mark.replaceWith(document.createTextNode(mark.textContent||'')));
+    el.normalize();
+  }
+  function highlightTextReaderSentence(text) {
+    const el=$('#text-reader'); if(!el || !text) return;
+    clearTextReaderMark(el);
+    const full=el.textContent||''; const needle=text.trim();
+    const pos=full.indexOf(needle); if(pos<0) return;
+    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+    let node, offset=0, startNode=null,endNode=null,startOffset=0,endOffset=0;
+    while(node=walker.nextNode()){
+      const next=offset+(node.nodeValue||'').length;
+      if(startNode===null && pos>=offset && pos<next){ startNode=node; startOffset=pos-offset; }
+      if(startNode && pos+needle.length<=next){ endNode=node; endOffset=pos+needle.length-offset; break; }
+      offset=next;
+    }
+    if(!startNode||!endNode) return;
+    try{ const r=document.createRange(); r.setStart(startNode,startOffset); r.setEnd(endNode,endOffset); const mark=document.createElement('span'); mark.className='tts-book-highlight'; r.surroundContents(mark); mark.scrollIntoView({behavior:'smooth',block:'center',inline:'nearest'}); }catch(e){}
+  }
+  function clearEpubHighlight() {
+    try {
+      const iframe=document.querySelector('#epub-area iframe');
+      const doc=iframe&&iframe.contentDocument;
+      doc?.querySelectorAll('span.tts-book-highlight').forEach(m=>m.replaceWith(doc.createTextNode(m.textContent||'')));
+      doc?.body?.normalize();
+    } catch(e) {}
+  }
+  function highlightEpubSentence(text) {
+    if(!text) return;
+    try{
+      const iframe=document.querySelector('#epub-area iframe'); const doc=iframe&&iframe.contentDocument; if(!doc) return;
+      clearEpubHighlight();
+      const needle=text.trim(); const walker=doc.createTreeWalker(doc.body,NodeFilter.SHOW_TEXT);
+      let node,offset=0, startNode=null,endNode=null,startOffset=0,endOffset=0;
+      while(node=walker.nextNode()){
+        const val=node.nodeValue||''; const idx=val.indexOf(needle);
+        if(idx>=0){startNode=node;startOffset=idx;endNode=node;endOffset=idx+needle.length;break;}
+        offset+=val.length;
+      }
+      if(!startNode) return;
+      const r=doc.createRange(); r.setStart(startNode,startOffset); r.setEnd(endNode,endOffset);
+      const mark=doc.createElement('span'); mark.className='tts-book-highlight'; r.surroundContents(mark); mark.scrollIntoView({behavior:'smooth',block:'center'});
+    }catch(e){}
+  }
+  function clearHighlights() {
+    const el=$('#text-reader'); if(el) clearTextReaderMark(el);
+    document.querySelectorAll('#pdf-text-layer .tts-pdf-active').forEach(x=>x.classList.remove('tts-pdf-active'));
+    clearEpubHighlight(); hideLiveCaption();
+  }
+  function highlightSentence(idx, wordIdx=-1) {
+    const item=state.ttsSentences[idx]; if(!item) return;
+    if(state.currentType==='pdf') {
+      const layer=document.querySelector('#pdf-text-layer');
+      if(layer){
+        layer.querySelectorAll('.tts-pdf-active').forEach(x=>x.classList.remove('tts-pdf-active'));
+        const tokens=speechFriendlyText(item.text).toLowerCase().split(/\s+/).filter(w=>w.length>2).slice(0,7);
+        layer.querySelectorAll('span').forEach(span=>{const t=(span.textContent||'').toLowerCase();if(tokens.some(token=>t.includes(token.replace(/[^\p{L}\p{N}]+/gu,'')))) span.classList.add('tts-pdf-active');});
+      }
+    } else if(['txt','html','htm','fb2'].includes(state.currentType) && state.highlightTTS) {
+      highlightTextReaderSentence(item.text);
+    } else if(state.currentType==='epub' && state.highlightTTS) {
+      highlightEpubSentence(item.text);
+    }
   }
 
   function speechFriendlyText(s) {

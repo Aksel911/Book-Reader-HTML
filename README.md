@@ -215,3 +215,11 @@ python3 -m http.server 8080
 ---
 
 Приятного чтения! 📖
+
+
+## Library v4 performance
+- Real imported folders are shown as navigable folders instead of a flat wall of books.
+- Only 60 book cards are mounted initially; more are added on demand.
+- PDF covers are lazy-loaded only near the viewport, with at most two renders in parallel.
+- Generated PDF thumbnails are cached in IndexedDB and reused on subsequent visits.
+- TTS highlights the actual reading surface in yellow for text-based books, EPUB and PDF text layers instead of relying on a separate caption panel.
