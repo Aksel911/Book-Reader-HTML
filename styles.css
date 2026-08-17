@@ -146,6 +146,13 @@ button, input, select, textarea {
   transform: scale(0.94);
   background: var(--surface-hover);
 }
+.icon-btn.active,
+#favorites-filter-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
 
 .library-main {
   flex: 1;
@@ -1527,12 +1534,32 @@ html[data-reading-mode="scroll-vertical"] .text-reader {
   padding-bottom: 48px;
 }
 
-html[data-reading-mode="two-page"] .text-reader.reading-two-page {
-  max-width: 1180px;
-  column-count: 2;
-  column-gap: 56px;
-  padding-left: 40px;
-  padding-right: 40px;
+/* True two-page spread (no CSS columns — reliable on iOS/desktop) */
+.text-reader.reading-two-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px 16px 40px;
+  height: 100%;
+}
+.text-two-page-spread {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px 40px;
+  height: 100%;
+  min-height: 60vh;
+}
+.text-two-page-col {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px 12px;
+  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.text-two-page-col:last-child { border-right: none; }
+.text-empty-col { min-height: 40vh; opacity: 0.3; }
+
+@media (max-width: 719px) {
+  .text-two-page-spread { grid-template-columns: 1fr; gap: 0; }
+  .text-two-page-col { border-right: none; }
 }
 
 .reading-mode-toggle { display:none; }

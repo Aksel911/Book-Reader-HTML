@@ -62,17 +62,36 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
 
-  // ===== Lazy library loaders (faster first paint on iPhone) =====
+  // ===== Library loaders (silent; engines preloaded in background) =====
   const _libPromises = {};
   function loadScriptOnce(src) {
     if (_libPromises[src]) return _libPromises[src];
     _libPromises[src] = new Promise((resolve, reject) => {
-      const existing = document.querySelector(`script[data-lib="${src}"]`);
+      // Already present via <script defer> or previous inject?
+      const bySrc = document.querySelector(`script[src="${src}"]`);
+      if (typeof pdfjsLib !== 'undefined' && src.includes('pdf.min')) return resolve();
+      if (typeof ePub !== 'undefined' && src.includes('epub.min')) return resolve();
+      if (typeof DjVu !== 'undefined' && src.includes('djvu.js') && !src.includes('viewer')) return resolve();
+
+      const existing = document.querySelector(`script[data-lib="${src}"]`) || bySrc;
       if (existing) {
         if (existing.dataset.loaded === '1') return resolve();
-        existing.addEventListener('load', () => resolve());
-        existing.addEventListener('error', () => reject(new Error('Failed: ' + src)));
-        return;
+        // defer script may still be loading
+        if (existing.async || existing.defer || existing.dataset.lib) {
+          existing.addEventListener('load', () => { existing.dataset.loaded = '1'; resolve(); });
+          existing.addEventListener('error', () => reject(new Error('Failed: ' + src)));
+          // If already complete
+          if (existing.dataset.loaded === '1') return resolve();
+          // Poll briefly for global (defer can finish without our listener if late)
+          let n = 0;
+          const timer = setInterval(() => {
+            n++;
+            if (src.includes('pdf.min') && typeof pdfjsLib !== 'undefined') { clearInterval(timer); resolve(); }
+            else if (src.includes('epub.min') && typeof ePub !== 'undefined') { clearInterval(timer); resolve(); }
+            else if (n > 100) { clearInterval(timer); reject(new Error('Timeout: ' + src)); }
+          }, 50);
+          return;
+        }
       }
       const s = document.createElement('script');
       s.src = src;
@@ -84,25 +103,52 @@
     });
     return _libPromises[src];
   }
+
+  function warmFetch(url) {
+    // Put file into HTTP cache without executing
+    return fetch(url, { credentials: 'same-origin', cache: 'force-cache' }).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+  }
+
+  let _workerWarmed = false;
+  function warmPdfWorker() {
+    if (_workerWarmed) return;
+    _workerWarmed = true;
+    warmFetch('libs/pdf.worker.min.js');
+  }
+
   async function ensurePDF() {
-    if (typeof pdfjsLib !== 'undefined') return;
-    showLoading('Загрузка PDF-движка…');
-    await loadScriptOnce('libs/pdf.min.js');
+    // No modal "Загрузка PDF-движка" — openBook already shows "Открываю книгу…"
+    if (typeof pdfjsLib === 'undefined') {
+      await loadScriptOnce('libs/pdf.min.js');
+    }
     if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js не загружен');
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+    warmPdfWorker();
   }
   async function ensureEPUB() {
     if (typeof ePub !== 'undefined') return;
-    showLoading('Загрузка EPUB-движка…');
     await loadScriptOnce('libs/epub.min.js');
     if (typeof ePub === 'undefined') throw new Error('epub.js не загружен');
   }
   async function ensureDJVU() {
     if (typeof DjVu !== 'undefined' && DjVu.Viewer) return;
-    showLoading('Загрузка DJVU-движка…');
     await loadScriptOnce('libs/djvu.js');
     await loadScriptOnce('libs/djvu_viewer.js');
     if (typeof DjVu === 'undefined' || !DjVu.Viewer) throw new Error('DjVu.js не загружен');
+  }
+
+  // Start warming heavy assets as soon as the main thread is free
+  function scheduleEngineWarmup() {
+    const run = () => {
+      warmPdfWorker();
+      // If pdf.min not yet there, pull it quietly
+      if (typeof pdfjsLib === 'undefined') loadScriptOnce('libs/pdf.min.js').then(() => {
+        if (typeof pdfjsLib !== 'undefined') pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+      }).catch(() => {});
+      warmFetch('libs/epub.min.js');
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 1500 });
+    else setTimeout(run, 400);
   }
 
   // ===== Utils =====
@@ -1339,16 +1385,17 @@
     return units;
   }
 
-  function estimateCharsPerPage() {
+  function estimateCharsPerPage(widthFactor = 1) {
     const rc = $('#reader-content');
     const h = Math.max(240, (rc?.clientHeight || window.innerHeight) - 24);
-    const w = Math.max(200, Math.min(720, (rc?.clientWidth || window.innerWidth) - 40));
+    const baseW = Math.max(200, Math.min(720, (rc?.clientWidth || window.innerWidth) - 40));
+    const w = Math.max(160, baseW * (widthFactor || 1));
     const fs = state.fontSize || 18;
     const lh = state.lineHeight || 1.7;
     const lines = Math.max(10, Math.floor(h / (fs * lh)));
     // Cyrillic is wider on average
-    const charsPerLine = Math.max(22, Math.floor(w / (fs * 0.58)));
-    return Math.max(500, Math.min(3500, lines * charsPerLine));
+    const charsPerLine = Math.max(18, Math.floor(w / (fs * 0.58)));
+    return Math.max(400, Math.min(3500, lines * charsPerLine));
   }
 
   function splitTextIntoPages(text, pageSize) {
@@ -1384,7 +1431,12 @@
 
   function fillParagraphs(container, text, baseParagraphIndex = 0) {
     const frag = document.createDocumentFragment();
-    const paragraphs = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/);
+    // Split on blank lines first; if almost no paragraphs, fall back to single newlines
+    let paragraphs = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
+    if (paragraphs.length <= 1) {
+      const alt = String(text || '').replace(/\r\n?/g, '\n').split(/\n/).map(s => s.trim()).filter(Boolean);
+      if (alt.length > 1) paragraphs = alt;
+    }
     paragraphs.forEach((raw, i) => {
       const paragraphIndex = baseParagraphIndex + i;
       const p = document.createElement('p');
@@ -1424,11 +1476,12 @@
     const mode = state.readingMode;
     const isContinuous = mode === 'scroll-vertical';
     const isHorizontal = mode === 'scroll-horizontal';
-    const isPaged = mode === 'paged' || mode === 'two-page';
+    const isTwoPage = mode === 'two-page' && window.innerWidth >= 720;
+    const isPaged = mode === 'paged' || (mode === 'two-page' && !isTwoPage);
 
     // Re-paginate when switching into paged/horizontal so page size matches viewport
-    if ((isPaged || isHorizontal) && state.fullText) {
-      const pageSize = estimateCharsPerPage();
+    if ((isPaged || isHorizontal || isTwoPage) && state.fullText) {
+      const pageSize = estimateCharsPerPage(isTwoPage ? 0.48 : 1);
       const rebuilt = splitTextIntoPages(state.fullText, pageSize);
       if (rebuilt.length !== state.textPages.length) {
         const ratio = state.textPages.length ? (state.textPage / state.textPages.length) : 0;
@@ -1441,7 +1494,7 @@
     el.classList.toggle('reading-continuous', isContinuous);
     el.classList.toggle('reading-paged', isPaged);
     el.classList.toggle('reading-horizontal', isHorizontal);
-    el.classList.toggle('reading-two-page', mode === 'two-page' && window.innerWidth >= 900);
+    el.classList.toggle('reading-two-page', isTwoPage);
     el.innerHTML = '';
 
     if (isContinuous) {
@@ -1484,6 +1537,25 @@
         }
       };
       $('#page-num').textContent = state.textPage + 1;
+      $('#page-count').textContent = state.textPages.length;
+    } else if (isTwoPage) {
+      // True two-page spread (side-by-side), no CSS columns — works on desktop & iPad
+      const spread = document.createElement('div');
+      spread.className = 'text-two-page-spread';
+      const left = document.createElement('div');
+      left.className = 'text-two-page-col';
+      const right = document.createElement('div');
+      right.className = 'text-two-page-col';
+      const leftIdx = state.textPage;
+      const rightIdx = Math.min(state.textPages.length - 1, leftIdx + 1);
+      fillParagraphs(left, state.textPages[leftIdx] || '', 0);
+      if (rightIdx > leftIdx) fillParagraphs(right, state.textPages[rightIdx] || '', 0);
+      else right.innerHTML = '<div class="text-empty-col"></div>';
+      spread.appendChild(left);
+      spread.appendChild(right);
+      el.appendChild(spread);
+      state.textContent = (state.textPages[leftIdx] || '') + '\n\n' + (state.textPages[rightIdx] || '');
+      $('#page-num').textContent = (leftIdx + 1) + (rightIdx > leftIdx ? '–' + (rightIdx + 1) : '');
       $('#page-count').textContent = state.textPages.length;
     } else {
       // Classic paged: one screen of text, flip with buttons / swipe
@@ -1528,9 +1600,17 @@
         return true;
       }
     }
-    // paged / two-page
-    const next = state.textPage + delta;
-    if (next < 0 || next >= state.textPages.length) return false;
+    // paged / two-page: two-page advances by 2 pages
+    const step = (mode === 'two-page' && window.innerWidth >= 720) ? 2 : 1;
+    const next = state.textPage + delta * step;
+    if (next < 0 || next >= state.textPages.length) {
+      if (delta < 0 && state.textPage > 0) {
+        state.textPage = 0;
+        renderTextPage();
+        return true;
+      }
+      return false;
+    }
     state.textPage = next;
     renderTextPage();
     const el = $('#text-reader');
@@ -1631,23 +1711,49 @@
 
   function loadVoices() {
     if (!synth) return;
-    state.voices = synth.getVoices();
+    state.voices = synth.getVoices() || [];
     const sel = $('#tts-voice');
+    if (!sel) return;
     const savedKey = localStorage.getItem('ttsVoiceKey') || state.ttsCurrentVoiceKey;
     sel.innerHTML = '';
-    if (!state.voices.length) { sel.innerHTML = '<option>Голоса...</option>'; return; }
-    const langPref = (state.detectedLang || 'ru-RU').slice(0, 2).toLowerCase();
-    const preferred = state.voices.filter(v => v.lang.toLowerCase().startsWith(langPref));
-    const rest = state.voices.filter(v => !v.lang.toLowerCase().startsWith(langPref));
-    [...preferred, ...rest].forEach(v => {
+    if (!state.voices.length) {
+      sel.innerHTML = '<option value="">Голоса загружаются…</option>';
+      return;
+    }
+    const langPref = (state.detectedLang || localStorage.getItem('ttsLang') || 'ru-RU').slice(0, 2).toLowerCase();
+    // Prefer local high-quality voices, then language match
+    const score = (v) => {
+      let s = 0;
+      const lang = (v.lang || '').toLowerCase();
+      if (lang.startsWith(langPref)) s += 100;
+      if (lang.startsWith('ru')) s += 40;
+      if (v.localService) s += 30;
+      if (/premium|enhanced|neural|natural|siri|yandex|milena|katya|irina|pavel/i.test(v.name)) s += 20;
+      return s;
+    };
+    const sorted = [...state.voices].sort((a, b) => score(b) - score(a) || a.name.localeCompare(b.name, 'ru'));
+    const ruCount = sorted.filter(v => (v.lang || '').toLowerCase().startsWith('ru')).length;
+    sorted.forEach(v => {
       const opt = document.createElement('option');
       opt.value = state.voices.indexOf(v);
-      opt.textContent = `${v.name} (${v.lang})`;
+      const local = v.localService ? ' · локальный' : '';
+      opt.textContent = `${v.name} (${v.lang}${local})`;
       opt.dataset.voiceKey = voiceKey(v);
       sel.appendChild(opt);
     });
+    // Hint when few Russian voices (common on iOS without extra downloads)
+    if (ruCount <= 2 && langPref === 'ru') {
+      const hint = document.createElement('option');
+      hint.disabled = true;
+      hint.textContent = `— Русских голосов: ${ruCount}. Добавьте в Настройки → Универсальный доступ → Живая речь / Голос —`;
+      sel.appendChild(hint);
+    }
     const preferredIndex = state.voices.findIndex(v => voiceKey(v) === savedKey);
     if (preferredIndex >= 0) sel.value = String(preferredIndex);
+    else {
+      const bestRu = sorted.find(v => (v.lang || '').toLowerCase().startsWith('ru'));
+      if (bestRu) sel.value = String(state.voices.indexOf(bestRu));
+    }
   }
   if (synth && synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
   loadVoices();
@@ -1687,15 +1793,36 @@
     if (state.currentType === 'pdf') {
       const layer = document.querySelector('#pdf-text-layer');
       if (!layer) return;
-      layer.querySelectorAll('.tts-pdf-active').forEach(x=>x.classList.remove('tts-pdf-active'));
-      const tokens = item.text.toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu,' ').split(/\s+/).filter(w=>w.length>2).slice(0,10);
+      layer.querySelectorAll('.tts-pdf-active').forEach(x => x.classList.remove('tts-pdf-active'));
+      // Improved matching: sequential token scoring (PDF text layer spans are often single words)
+      const raw = (item.text || '').toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').replace(/\s+/g, ' ').trim();
+      const tokens = raw.split(' ').filter(w => w.length > 2);
+      if (!tokens.length) return;
       const spans = [...layer.querySelectorAll('span')];
-      spans.forEach(span => {
-        const t=(span.textContent||'').toLowerCase();
-        if (tokens.some(token=>t.includes(token))) span.classList.add('tts-pdf-active');
-      });
-      const first = layer.querySelector('.tts-pdf-active');
-      if (first) first.scrollIntoView({behavior:'smooth', block:'center'});
+      const spanTexts = spans.map(s => (s.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim());
+      let bestStart = -1, bestScore = 0;
+      for (let i = 0; i < spans.length; i++) {
+        let score = 0, ti = 0;
+        for (let j = i; j < Math.min(spans.length, i + tokens.length + 4) && ti < tokens.length; j++) {
+          if (spanTexts[j].includes(tokens[ti]) || tokens[ti].includes(spanTexts[j])) {
+            score += 1 + Math.min(3, tokens[ti].length / 4);
+            ti++;
+          }
+        }
+        if (score > bestScore) { bestScore = score; bestStart = i; }
+      }
+      if (bestStart >= 0 && bestScore >= 1) {
+        const end = Math.min(spans.length, bestStart + Math.max(4, tokens.length + 2));
+        for (let k = bestStart; k < end; k++) spans[k].classList.add('tts-pdf-active');
+        spans[bestStart].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else {
+        const long = tokens.filter(t => t.length > 4).slice(0, 6);
+        spans.forEach((span, i) => {
+          if (long.some(t => spanTexts[i].includes(t))) span.classList.add('tts-pdf-active');
+        });
+        const first = layer.querySelector('.tts-pdf-active');
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       return;
     }
     if (state.currentType === 'epub') highlightEpubSentence(item.text);
@@ -1973,8 +2100,14 @@
           div.textContent = item.label || 'Раздел';
           div.addEventListener('click', async () => {
             if (item.href && state.epubRendition) {
-              await state.epubRendition.display(item.href);
+              try {
+                await state.epubRendition.display(item.href);
+              } catch (e) { console.warn('TOC jump', e); }
               $('#side-panel').classList.add('hidden');
+              // Ensure navigation still works after TOC jump
+              requestAnimationFrame(() => {
+                try { state.epubRendition?.reportLocation?.(); } catch (_) {}
+              });
             }
           });
           box.appendChild(div);
@@ -1983,15 +2116,27 @@
       }
       addItems(state.epubToc);
     } else if (['txt', 'html', 'htm', 'fb2'].includes(state.currentType)) {
-      // Simple page list
-      const step = Math.max(1, Math.floor(state.textPages.length / 20));
-      for (let i = 0; i < state.textPages.length; i += step) {
+      // Simple page list — jump preserves current reading mode
+      const total = Math.max(1, state.textPages.length || 1);
+      const step = Math.max(1, Math.floor(total / 20));
+      for (let i = 0; i < total; i += step) {
         const div = document.createElement('div');
         div.className = 'toc-item level-1';
         div.textContent = `Страница ${i + 1}`;
         div.addEventListener('click', () => {
-          state.textPage = i;
+          state.textPage = Math.min(i, total - 1);
           renderTextPage();
+          // Re-sync horizontal track / scroll after TOC jump so swipe & buttons work
+          requestAnimationFrame(() => {
+            const track = document.querySelector('.text-h-track');
+            if (track && state.readingMode === 'scroll-horizontal') {
+              const pageEl = track.children[state.textPage];
+              if (pageEl) pageEl.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'auto' });
+            } else {
+              const rc = $('#reader-content');
+              if (rc) rc.scrollTop = 0;
+            }
+          });
           $('#side-panel').classList.add('hidden');
         });
         box.appendChild(div);
@@ -2002,8 +2147,11 @@
         const div = document.createElement('div');
         div.className = 'toc-item level-1';
         div.textContent = `Страница ${i}`;
-        div.addEventListener('click', () => {
-          renderPDFPage(i);
+        div.addEventListener('click', async () => {
+          // Always use mode-aware render so continuous/horizontal stay consistent
+          // (previously always called renderPDFPage → broke buttons/swipe until mode switch)
+          state.pdfPage = i;
+          await renderPDFByMode();
           $('#side-panel').classList.add('hidden');
         });
         box.appendChild(div);
@@ -2157,10 +2305,37 @@
     });
   }
 
-  $('#reader-menu-btn').addEventListener('click', () => {
+  function openSettingsModal() {
     refreshFavTagsUI();
+    // Hide book-specific section when opened from library
+    const favSec = $('#fav-tags-section');
+    if (favSec) favSec.style.display = state.currentBook ? '' : 'none';
     $('#modal-overlay').classList.remove('hidden');
-  });
+  }
+  $('#reader-menu-btn').addEventListener('click', openSettingsModal);
+  const readerSettingsBtn = $('#reader-settings-btn');
+  if (readerSettingsBtn) readerSettingsBtn.addEventListener('click', openSettingsModal);
+  const librarySettingsBtn = $('#library-settings-btn');
+  if (librarySettingsBtn) librarySettingsBtn.addEventListener('click', openSettingsModal);
+
+  // Quick filter: Избранное from library header
+  const favFilterBtn = $('#favorites-filter-btn');
+  if (favFilterBtn) {
+    favFilterBtn.addEventListener('click', () => {
+      const sel = $('#filter-status');
+      if (!sel) return;
+      if (sel.value === 'favorites') {
+        sel.value = 'all';
+        favFilterBtn.classList.remove('active');
+        toast('Показаны все книги');
+      } else {
+        sel.value = 'favorites';
+        favFilterBtn.classList.add('active');
+        toast('⭐ Избранное');
+      }
+      sel.dispatchEvent(new Event('change'));
+    });
+  }
 
   $('#toggle-favorite').addEventListener('change', () => {
     if (!state.currentBook) return;
@@ -2325,6 +2500,7 @@
   $('#tts-rate-label').textContent = state.ttsRate.toFixed(1) + '×';
   applyReaderStyles();
   applyChromeState();
+  scheduleEngineWarmup();
 
-  console.log('Умный Читатель v6.3 готов 📚✨');
+  console.log('Умный Читатель v6.5 готов 📚✨');
 })();

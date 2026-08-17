@@ -14,8 +14,13 @@
   <title>Book Reader</title>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="styles.css">
-  <!-- Lightweight only at start; PDF / EPUB / DJVU load on demand for faster first paint -->
+  <!-- Preload heavy engines into cache while user browses library -->
+  <link rel="preload" href="libs/pdf.min.js" as="script">
+  <link rel="preload" href="libs/pdf.worker.min.js" as="script">
+  <link rel="preload" href="libs/epub.min.js" as="script">
   <script src="libs/jszip.min.js"></script>
+  <!-- PDF core loads in parallel, does not block UI (defer) -->
+  <script src="libs/pdf.min.js" defer></script>
 </head>
 <body>
   <!-- ===== LIBRARY SCREEN ===== -->
@@ -26,8 +31,10 @@
         <p class="subtitle">Локальная библиотека · офлайн</p>
       </div>
       <div class="header-actions">
+        <button id="favorites-filter-btn" class="icon-btn" title="Избранное">⭐</button>
         <button id="stats-btn" class="icon-btn" title="Статистика">📊</button>
         <button id="theme-toggle" class="icon-btn" title="Тема">🌓</button>
+        <button id="library-settings-btn" class="icon-btn" title="Настройки">⚙</button>
       </div>
     </header>
 
@@ -119,6 +126,7 @@
         <button id="bookmark-btn" class="icon-btn" title="Закладка">🔖</button>
         <button id="search-in-book-btn" class="icon-btn" title="Поиск">🔍</button>
         <button id="toggle-chrome-btn" class="icon-btn" title="Скрыть/показать панели">▣</button>
+        <button id="reader-settings-btn" class="icon-btn" title="Настройки">⚙</button>
         <button id="reader-menu-btn" class="icon-btn" title="Меню">⋮</button>
       </div>
     </header>
