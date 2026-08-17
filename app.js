@@ -29,6 +29,9 @@
     lineHeight: parseFloat(localStorage.getItem('lineHeight') || '1.7'),
     fontFamily: localStorage.getItem('fontFamily') || 'system-ui',
     ttsRate: parseFloat(localStorage.getItem('ttsRate') || '1'),
+    ttsPitch: parseFloat(localStorage.getItem('ttsPitch') || '1'),
+    ttsPause: parseInt(localStorage.getItem('ttsPause') || '220', 10),
+    ttsSmartPause: localStorage.getItem('ttsSmartPause') !== 'false',
     continuousTTS: true,
     highlightTTS: true,
     sleepTimerId: null,
@@ -115,18 +118,43 @@
     return 'ru-RU';
   }
 
-  // Split text into sentences for TTS highlighting
+  // Split text into short, speech-friendly units.
+  // Keep paragraph boundaries and sentence punctuation so pauses sound natural in RU/EN.
   function splitSentences(text) {
     if (!text) return [];
-    const parts = text.match(/[^.!?…]+[.!?…]+(?:\s+|$)|[^.!?…]+$/g) || [text];
+    const normalized = String(text)
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\s+([,.;!?…])/g, '$1')
+      .trim();
+    const paragraphs = normalized.split(/\n\s*\n/);
     const out = [];
-    for (const part of parts) {
-      const clean = part.replace(/\s+/g, ' ').trim();
-      if (!clean) continue;
-      if (clean.length <= 260) out.push(clean);
-      else for (let i = 0; i < clean.length; i += 240) out.push(clean.slice(i, i + 240).trim());
+    const rx = /[^.!?…]+(?:[.!?…]+(?=\s|$)|$)/g;
+    for (const para of paragraphs) {
+      const cleanPara = para.replace(/\s+/g, ' ').trim();
+      if (!cleanPara) continue;
+      const parts = cleanPara.match(rx) || [cleanPara];
+      for (const raw of parts) {
+        const s = raw.trim();
+        if (!s) continue;
+        if (s.length <= 300) out.push(s);
+        else {
+          // Prefer clause breaks over hard character cuts.
+          const clauses = s.split(/(?<=[,;:—–])\s+/);
+          let buf = '';
+          for (const c of clauses) {
+            if (!buf) buf = c;
+            else if ((buf + ' ' + c).length <= 300) buf += ' ' + c;
+            else { out.push(buf.trim()); buf = c; }
+          }
+          if (buf) out.push(buf.trim());
+        }
+      }
+      // Paragraph pause marker is stored separately, not pronounced.
+      if (out.length) out[out.length - 1] = { text: typeof out[out.length - 1] === 'string' ? out[out.length - 1] : out[out.length - 1].text, paragraphEnd: true };
     }
-    return out.filter(Boolean);
+    return out.map(x => typeof x === 'string' ? { text:x, paragraphEnd:false } : x).filter(x => x.text);
   }
 
   // ===== Storage =====
@@ -311,78 +339,154 @@
     });
   }
 
+  const PREVIEW_CACHE = new Map();
+  let previewObserver = null;
+  const PREVIEW_PENDING = new Set();
+  function getBookStatus(book) {
+    const p = Number(book.progress || 0);
+    if (p >= 0.98) return 'finished';
+    if (p > 0.01) return 'reading';
+    return 'unread';
+  }
+
+  function typeLabel(type) {
+    const m = { pdf:'PDF', epub:'EPUB', fb2:'FB2', djvu:'DJVU', djv:'DJVU', txt:'TXT', html:'HTML', htm:'HTML', zip:'ZIP', rar:'RAR' };
+    return m[type] || type.toUpperCase();
+  }
+
+  function bookCoverMarkup(book) {
+    const title = escapeHtml(book.name || 'Без названия');
+    const ext = typeLabel(book.type);
+    const initials = escapeHtml((book.name || 'Book').split(/\s+/).slice(0,2).map(x => x[0] || '').join('').toUpperCase().slice(0,2));
+    return `<div class="book-cover book-cover-${escapeHtml(book.type)}" data-book-key="${escapeHtml(book.key || book.path)}">
+      <div class="cover-noise"></div>
+      <div class="cover-spine"></div>
+      <div class="cover-top"><span class="cover-format">${ext}</span><span class="cover-mark">✦</span></div>
+      <div class="cover-center"><div class="cover-initials">${initials || 'BK'}</div><div class="cover-mini-title">${title}</div></div>
+      <div class="cover-bottom"><span>LOCAL LIBRARY</span><span>OFFLINE</span></div>
+    </div>`;
+  }
+
+  async function hydratePreview(book, card) {
+    if (book.type !== 'pdf') return;
+    const host = card.querySelector('.book-cover');
+    if (!host || PREVIEW_PENDING.has(book.key)) return;
+    if (PREVIEW_CACHE.has(book.key)) {
+      host.style.backgroundImage = `linear-gradient(180deg,rgba(4,4,6,.03),rgba(4,4,6,.46)),url(${PREVIEW_CACHE.get(book.key)})`;
+      return;
+    }
+    PREVIEW_PENDING.add(book.key);
+    try {
+      if (!window.pdfjsLib) return;
+      const buf = await book.file.arrayBuffer();
+      const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+      const page = await doc.getPage(1);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(0.62, 180 / base.height);
+      const vp = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      const url = canvas.toDataURL('image/jpeg', 0.68);
+      PREVIEW_CACHE.set(book.key, url);
+      if (card.isConnected) host.style.backgroundImage = `linear-gradient(180deg,rgba(4,4,6,.03),rgba(4,4,6,.46)),url(${url})`;
+      if (doc.destroy) doc.destroy();
+    } catch (e) {
+      console.debug('Preview fallback', book.name, e?.message || e);
+    } finally {
+      PREVIEW_PENDING.delete(book.key);
+    }
+  }
+
+  function observePreview(card, book) {
+    if (book.type !== 'pdf') return;
+    if (!previewObserver) {
+      previewObserver = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          const el = entry.target;
+          previewObserver.unobserve(el);
+          const key = el.dataset.previewKey;
+          const source = (state.rootBooks || state.books).find(b => (b.key || b.path) === key) || getCurrentBooks().find(b => (b.key || b.path) === key);
+          if (source) hydratePreview(source, el);
+        });
+      }, { rootMargin:'500px 0px', threshold:0.01 });
+    }
+    card.dataset.previewKey = book.key || book.path;
+    previewObserver.observe(card);
+  }
+
   function renderLibrary(filter = '') {
     $('#welcome-card').classList.add('hidden');
     $('#library-content').classList.remove('hidden');
     renderBreadcrumb();
-
     const source = getCurrentBooks();
     const q = filter.trim().toLowerCase();
-    let list = q
-      ? source.filter(b => b.name.toLowerCase().includes(q) || (b.path || '').toLowerCase().includes(q))
-      : [...source];
-
+    const type = $('#filter-type').value;
+    const status = $('#filter-status').value;
+    let list = source.filter(b => {
+      const matchesQ = !q || b.name.toLowerCase().includes(q) || (b.path || '').toLowerCase().includes(q);
+      const matchesType = type === 'all' || (type === 'archive' ? b.isArchive : (b.type === type || (type === 'djvu' && b.type === 'djv') || (type === 'html' && b.type === 'htm')));
+      const s = getBookStatus(b);
+      const matchesStatus = status === 'all' || (status === 'favorites' ? isFavorite(b.key || b.path) : s === status);
+      return matchesQ && matchesType && matchesStatus;
+    });
     const sort = $('#sort-books').value;
-    if (sort === 'favorites') {
-      list = list.filter(b => isFavorite(b.key || b.path));
-      list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-    } else if (sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-    else if (sort === 'progress') list.sort((a, b) => (b.progress || 0) - (a.progress || 0));
-    else if (sort === 'type') list.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name, 'ru'));
-    else if (sort === 'recent') list.sort((a, b) => (b.lastOpened || 0) - (a.lastOpened || 0));
+    if (sort === 'name') list.sort((a,b) => a.name.localeCompare(b.name,'ru'));
+    else if (sort === 'progress') list.sort((a,b) => (b.progress||0)-(a.progress||0));
+    else if (sort === 'type') list.sort((a,b) => typeLabel(a.type).localeCompare(typeLabel(b.type)) || a.name.localeCompare(b.name,'ru'));
+    else if (sort === 'recent') list.sort((a,b) => (b.lastOpened||0)-(a.lastOpened||0));
+    else if (sort === 'size') list.sort((a,b) => (b.size||0)-(a.size||0));
 
     const totalRoot = (state.rootBooks || state.books).length;
-    const inArch = state.archiveStack.length ? ` (в архиве)` : '';
-    $('#library-stats').textContent = `Показано: ${list.length}${inArch} · всего в корне: ${totalRoot}`;
+    $('#library-stats').textContent = `Показано ${list.length} из ${totalRoot}`;
     $('#hero-book-count').textContent = totalRoot;
-    $('#library-heading').textContent = state.archiveStack.length ? state.archiveStack[state.archiveStack.length - 1].name : 'Все книги';
-    $('#library-subheading').textContent = state.archiveStack.length ? 'Содержимое архива' : 'Локальная коллекция на этом устройстве';
+    $('#library-heading').textContent = state.archiveStack.length ? state.archiveStack[state.archiveStack.length - 1].name : 'Ваша библиотека';
+    $('#library-subheading').textContent = state.archiveStack.length ? 'Содержимое архива' : 'Все книги остаются на устройстве';
+
+    const chipBox = $('#filter-chips');
+    chipBox.innerHTML = '';
+    const active = [];
+    if (q) active.push(`Поиск: ${escapeHtml(filter)}`);
+    if (type !== 'all') active.push(type === 'archive' ? 'Архивы' : typeLabel(type));
+    if (status !== 'all') active.push(status === 'favorites' ? 'Избранное' : status === 'reading' ? 'В процессе' : status === 'finished' ? 'Прочитано' : 'Не начато');
+    active.forEach(t => { const c=document.createElement('span'); c.className='filter-chip'; c.textContent=t; chipBox.appendChild(c); });
 
     const grid = $('#books-grid');
     grid.innerHTML = '';
     if (!list.length) {
-      const msg = $('#sort-books').value === 'favorites'
-        ? 'В избранном пока пусто.<br>Откройте книгу → ⋮ → «В избранном»'
-        : 'Ничего не найдено';
-      grid.innerHTML = `<p style="grid-column:1/-1;text-align:center;color:var(--text-muted);padding:40px;line-height:1.5">${msg}</p>`;
+      grid.innerHTML = `<div class="empty-library"><div class="empty-icon">⌕</div><h3>Ничего не найдено</h3><p>Измените поиск или фильтры, либо добавьте ещё книги.</p></div>`;
       return;
     }
-
     list.forEach(book => {
-      const bms = getBookmarks(book.key || book.path);
-      const card = document.createElement('div');
-      card.className = 'book-card' + (bms.length ? ' has-bookmark' : '');
-      const icon = { pdf: '📄', epub: '📘', fb2: '📙', djvu: '📗', djv: '📗', txt: '📝', html: '🌐', htm: '🌐', zip: '📦', rar: '📦' }[book.type] || (book.isArchive ? '📦' : '📖');
-      const fav = isFavorite(book.key || book.path);
-      const tags = getTags(book.key || book.path);
-      const tagsHtml = tags.length
-        ? `<div class="book-tags">${tags.slice(0, 3).map(t => `<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`
-        : '';
+      const key = book.key || book.path;
+      const card = document.createElement('article');
+      const st = getBookStatus(book);
+      card.className = `book-card status-${st}` + (getBookmarks(key).length ? ' has-bookmark' : '');
+      const fav = isFavorite(key);
+      const tags = getTags(key);
+      const progress = Math.min(100, Math.round((book.progress || 0) * 100));
       card.innerHTML = `
-        <button type="button" class="fav-star" title="Избранное">${fav ? '⭐' : '☆'}</button>
-        <div class="book-cover ${book.type}">${icon}</div>
+        <button type="button" class="fav-star" title="${fav ? 'Убрать из избранного':'В избранное'}">${fav ? '★':'☆'}</button>
+        ${bookCoverMarkup(book)}
         <div class="book-info">
-          <div class="book-name">${escapeHtml(book.name)}</div>
-          <div class="book-meta">${(book.isArchive ? 'Архив ' : '') + book.type.toUpperCase()} · ${formatSize(book.size || 0)}</div>
-          ${book.path && book.path.includes('/') ? `<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path.split('/').slice(0, -1).join(' / '))}</div>` : ''}
-          ${tagsHtml}
-          <div class="book-progress"><div class="book-progress-bar" style="width:${Math.min(100, (book.progress || 0) * 100)}%"></div></div>
+          <div class="book-name" title="${escapeHtml(book.name)}">${escapeHtml(book.name)}</div>
+          <div class="book-meta"><span>${typeLabel(book.type)}</span><span>•</span><span>${formatSize(book.size || 0)}</span></div>
+          ${book.path && book.path.includes('/') ? `<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path.split('/').slice(0,-1).join(' / '))}</div>` : ''}
+          ${tags.length ? `<div class="book-tags">${tags.slice(0,2).map(t=>`<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}
+          <div class="book-progress"><div class="book-progress-bar" style="width:${progress}%"></div></div>
         </div>`;
-      const starBtn = card.querySelector('.fav-star');
-      starBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const now = toggleFavorite(book.key || book.path);
-        starBtn.textContent = now ? '⭐' : '☆';
-        toast(now ? 'В избранном ⭐' : 'Убрано из избранного');
-      });
+      card.querySelector('.fav-star').addEventListener('click', e => { e.stopPropagation(); const now=toggleFavorite(key); e.currentTarget.textContent=now?'★':'☆'; renderLibrary($('#search-books').value); });
       card.addEventListener('click', () => openBook(book));
       grid.appendChild(card);
+      observePreview(card, book);
     });
   }
 
   $('#search-books').addEventListener('input', () => renderLibrary($('#search-books').value));
   $('#sort-books').addEventListener('change', () => renderLibrary($('#search-books').value));
+  $('#filter-type').addEventListener('change', () => renderLibrary($('#search-books').value));
+  $('#filter-status').addEventListener('change', () => renderLibrary($('#search-books').value));
   $('#reselect-folder').addEventListener('click', () => {
     $('#folder-input').value = '';
     $('#folder-input').click();
@@ -643,10 +747,25 @@
     const ctx = canvas.getContext('2d');
     canvas.height = vp.height;
     canvas.width = vp.width;
-    viewer.appendChild(canvas);
+    const pageWrap = document.createElement('div');
+    pageWrap.className = 'pdf-page-wrap';
+    pageWrap.style.width = vp.width + 'px';
+    pageWrap.style.height = vp.height + 'px';
+    pageWrap.appendChild(canvas);
+    viewer.appendChild(pageWrap);
     await page.render({ canvasContext: ctx, viewport: vp }).promise;
 
     const tc = await page.getTextContent();
+    const textLayer = document.createElement('div');
+    textLayer.id = 'pdf-text-layer';
+    textLayer.className = 'pdf-text-layer';
+    pageWrap.appendChild(textLayer);
+    try {
+      if (pdfjsLib.renderTextLayer) {
+        const task = pdfjsLib.renderTextLayer({ textContentSource: tc, container: textLayer, viewport });
+        if (task?.promise) await task.promise;
+      }
+    } catch (e) { console.debug('PDF text layer unavailable', e); }
     const pageText = tc.items.map(i => i.str).join(' ');
     state.textContent = pageText;
     state.fullText = pageText;
@@ -863,98 +982,147 @@
     return '';
   }
 
-  function clearHighlights() {
-    const el = $('#text-reader');
-    if (el) el.textContent = state.textContent; // reset
+  function hideLiveCaption() {
+    const c = $('#tts-live-caption');
+    c.classList.add('hidden');
+    c.innerHTML = '';
   }
 
-  function highlightSentence(idx) {
-    if (!state.highlightTTS || !['txt', 'html', 'htm', 'fb2'].includes(state.currentType)) return;
-    const el = $('#text-reader');
-    if (!el || !state.ttsSentences.length) return;
+  function showLiveCaption(text, activeWord = -1) {
+    const c = $('#tts-live-caption');
+    if (!text) { hideLiveCaption(); return; }
+    c.classList.remove('hidden');
+    const words = text.split(/(\s+)/);
+    let pos = 0;
+    c.innerHTML = words.map(part => {
+      if (/\s+/.test(part)) return part;
+      const i = pos++;
+      return `<span class="tts-caption-word${i === activeWord ? ' active':''}">${escapeHtml(part)}</span>`;
+    }).join('');
+  }
 
+  function clearHighlights() {
+    const el = $('#text-reader');
+    if (el) el.textContent = state.textContent;
+    document.querySelectorAll('#pdf-text-layer .tts-pdf-active').forEach(x => x.classList.remove('tts-pdf-active'));
+    hideLiveCaption();
+  }
+
+  function highlightSentence(idx, wordIdx = -1) {
+    const item = state.ttsSentences[idx];
+    if (!item) return;
+    showLiveCaption(item.text, wordIdx);
+    if (state.currentType === 'pdf') {
+      const layer = document.querySelector('#pdf-text-layer');
+      if (layer) {
+        layer.querySelectorAll('.tts-pdf-active').forEach(x => x.classList.remove('tts-pdf-active'));
+        const tokens = speechFriendlyText(item.text).toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 5);
+        layer.querySelectorAll('span').forEach(span => {
+          const t = (span.textContent || '').toLowerCase();
+          if (tokens.some(token => t.includes(token.replace(/[^\p{L}\p{N}]+/gu,'')))) span.classList.add('tts-pdf-active');
+        });
+      }
+    }
+    if (!state.highlightTTS || !['txt','html','htm','fb2'].includes(state.currentType)) return;
+    const el = $('#text-reader');
+    if (!el) return;
     let html = '';
-    state.ttsSentences.forEach((s, i) => {
-      if (i === idx) html += `<span class="tts-highlight active">${escapeHtml(s)}</span> `;
-      else html += escapeHtml(s) + ' ';
+    state.ttsSentences.forEach((entry,i) => {
+      const s = entry.text;
+      if (i !== idx) { html += escapeHtml(s) + ' '; return; }
+      const words = s.split(/(\s+)/);
+      let wi = 0;
+      html += words.map(part => {
+        if (/\s+/.test(part)) return part;
+        const cls = wi === wordIdx ? 'tts-highlight active tts-word-active' : 'tts-highlight active';
+        wi++;
+        return `<span class="${cls}">${escapeHtml(part)}</span>`;
+      }).join('');
+      html += ' ';
     });
     el.innerHTML = html;
+    const active = el.querySelector('.tts-word-active') || el.querySelector('.tts-highlight.active');
+    if (active) active.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
+  }
 
-    // Scroll active into view
-    const active = el.querySelector('.tts-highlight.active');
-    if (active) active.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  function speechFriendlyText(s) {
+    return String(s)
+      .replace(/\s*[—–]\s*/g, ', — ')
+      .replace(/\s*:\s*/g, ': ')
+      .replace(/\s*;\s*/g, '; ')
+      .replace(/\.{4,}/g, '…')
+      .trim();
+  }
+
+  function smartPauseMs(item) {
+    if (!state.ttsSmartPause) return state.ttsPause;
+    let pause = state.ttsPause;
+    const t = item.text;
+    if (item.paragraphEnd) pause += 180;
+    if (/^[\dIVXLC]+[.)]|^(глава|chapter|часть|part)\b/i.test(t)) pause += 220;
+    if (/[!?…]$/.test(t)) pause += 80;
+    return pause;
   }
 
   function speakSentences(sentences, startIdx = 0) {
     if (!synth) { toast('Озвучка недоступна в этом браузере'); return; }
-    if (!sentences.length) {
-      toast('Нет текста для озвучки');
-      return;
-    }
-    state.ttsSentences = sentences;
+    if (!sentences.length) { toast('Нет текста для озвучки'); return; }
+    state.ttsSentences = sentences.map(x => typeof x === 'string' ? {text:x,paragraphEnd:false} : x);
     state.ttsSentenceIdx = startIdx;
     speakNextSentence();
   }
 
   function speakNextSentence() {
     if (state.ttsSentenceIdx >= state.ttsSentences.length) {
-      // finished page → continuous?
       state.isSpeaking = false;
       $('#tts-play').textContent = '▶';
       clearHighlights();
       if (state.continuousTTS) {
         setTimeout(() => {
           if (state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) {
-            renderPDFPage(state.pdfPage + 1).then(() => {
-              const next = splitSentences(getCurrentText());
-              if (next.length) speakSentences(next);
-            });
+            renderPDFPage(state.pdfPage + 1).then(() => { const next=splitSentences(getCurrentText()); if(next.length) speakSentences(next); });
           } else if (state.currentType === 'epub' && state.epubRendition) {
-            state.epubRendition.next().then(() => {
-              setTimeout(() => {
-                const next = splitSentences(getCurrentText());
-                if (next.length) speakSentences(next);
-              }, 500);
-            });
-          } else if (['txt', 'html', 'htm', 'fb2'].includes(state.currentType) && state.textPage < state.textPages.length - 1) {
-            state.textPage++;
-            renderTextPage();
-            const next = splitSentences(state.textContent);
-            if (next.length) speakSentences(next);
+            state.epubRendition.next().then(() => setTimeout(() => { const next=splitSentences(getCurrentText()); if(next.length) speakSentences(next); }, 500));
+          } else if (['txt','html','htm','fb2'].includes(state.currentType) && state.textPage < state.textPages.length - 1) {
+            state.textPage++; renderTextPage(); const next=splitSentences(state.textContent); if(next.length) speakSentences(next);
           }
-        }, 400);
+        }, Math.max(140, state.ttsPause));
       }
       return;
     }
-
-    const text = state.ttsSentences[state.ttsSentenceIdx];
-    highlightSentence(state.ttsSentenceIdx);
-
-    if (synth) synth.cancel();
+    const item = state.ttsSentences[state.ttsSentenceIdx];
+    const text = speechFriendlyText(item.text);
+    highlightSentence(state.ttsSentenceIdx, -1);
+    synth.cancel();
     const u = new SpeechSynthesisUtterance(text);
     const override = $('#tts-lang-override').value;
     const lang = override === 'auto' ? state.detectedLang : override;
     u.lang = lang;
     u.rate = state.ttsRate;
-
-    const idx = parseInt($('#tts-voice').value, 10);
-    if (!isNaN(idx) && state.voices[idx]) u.voice = state.voices[idx];
+    const emotion = /[!?]$/.test(text) ? 0.06 : (/…$/.test(text) ? -0.03 : 0);
+    u.pitch = Math.max(0.7, Math.min(1.3, state.ttsPitch + emotion));
+    u.volume = 1;
+    const idx = parseInt($('#tts-voice').value,10);
+    if (!isNaN(idx) && state.voices[idx]) u.voice=state.voices[idx];
     else {
-      const m = state.voices.find(v => v.lang.startsWith(lang.slice(0, 2)));
-      if (m) u.voice = m;
+      const matches = state.voices.filter(v => v.lang.toLowerCase().startsWith(lang.slice(0,2).toLowerCase()));
+      const local = matches.find(v => v.localService) || matches[0];
+      if (local) u.voice=local;
     }
-
+    u.onboundary = e => {
+      if (typeof e.charIndex !== 'number') return;
+      const before = text.slice(0,e.charIndex);
+      const wordIdx = before.trim() ? before.trim().split(/\s+/).length - 1 : 0;
+      highlightSentence(state.ttsSentenceIdx, Math.max(0, wordIdx));
+    };
     u.onend = () => {
       state.ttsSentenceIdx++;
-      if (state.isSpeaking) speakNextSentence();
+      if (state.isSpeaking) setTimeout(() => speakNextSentence(), smartPauseMs(item));
     };
-    u.onerror = () => {
-      state.isSpeaking = false;
-      $('#tts-play').textContent = '▶';
-    };
-
-    state.isSpeaking = true;
-    $('#tts-play').textContent = '⏸';
+    u.onerror = () => { state.isSpeaking=false; $('#tts-play').textContent='▶'; };
+    state.isSpeaking=true;
+    $('#tts-play').textContent='⏸';
+    showLiveCaption(text,-1);
     synth.speak(u);
   }
 
@@ -990,6 +1158,18 @@
     localStorage.setItem('ttsRate', state.ttsRate);
     $('#tts-rate-label').textContent = state.ttsRate.toFixed(1) + '×';
   });
+
+  $('#tts-more-btn').addEventListener('click', () => $('#tts-settings-overlay').classList.remove('hidden'));
+  $('#close-tts-settings').addEventListener('click', () => $('#tts-settings-overlay').classList.add('hidden'));
+  $('#tts-settings-overlay').addEventListener('click', e => { if (e.target === $('#tts-settings-overlay')) $('#tts-settings-overlay').classList.add('hidden'); });
+  $('#tts-pitch').value = state.ttsPitch;
+  $('#tts-pitch-label').textContent = state.ttsPitch.toFixed(2);
+  $('#tts-pause').value = state.ttsPause;
+  $('#tts-pause-label').textContent = state.ttsPause + ' мс';
+  $('#tts-smart-pause').checked = state.ttsSmartPause;
+  $('#tts-pitch').addEventListener('input', e => { state.ttsPitch=parseFloat(e.target.value); localStorage.setItem('ttsPitch',state.ttsPitch); $('#tts-pitch-label').textContent=state.ttsPitch.toFixed(2); });
+  $('#tts-pause').addEventListener('input', e => { state.ttsPause=parseInt(e.target.value,10); localStorage.setItem('ttsPause',state.ttsPause); $('#tts-pause-label').textContent=state.ttsPause+' мс'; });
+  $('#tts-smart-pause').addEventListener('change', e => { state.ttsSmartPause=e.target.checked; localStorage.setItem('ttsSmartPause',e.target.checked); });
 
   // ===== Sleep Timer =====
   $('#tts-timer-btn').addEventListener('click', () => {

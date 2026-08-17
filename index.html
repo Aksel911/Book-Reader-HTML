@@ -70,14 +70,34 @@
           </div>
           <div class="toolbar-row">
             <div class="stats" id="library-stats"></div>
-            <select id="sort-books" class="sort-select">
-              <option value="name">По названию</option>
-              <option value="progress">По прогрессу</option>
-              <option value="type">По формату</option>
-              <option value="recent">Недавние</option>
-              <option value="favorites">⭐ Избранное</option>
-            </select>
+            <div class="toolbar-actions">
+              <select id="filter-type" class="sort-select" aria-label="Формат">
+                <option value="all">Все форматы</option>
+                <option value="pdf">PDF</option>
+                <option value="epub">EPUB</option>
+                <option value="fb2">FB2</option>
+                <option value="djvu">DJVU</option>
+                <option value="txt">TXT</option>
+                <option value="html">HTML</option>
+                <option value="archive">Архивы</option>
+              </select>
+              <select id="filter-status" class="sort-select" aria-label="Статус">
+                <option value="all">Любой статус</option>
+                <option value="unread">Не начато</option>
+                <option value="reading">Читаю</option>
+                <option value="finished">Прочитано</option>
+                <option value="favorites">⭐ Избранное</option>
+              </select>
+              <select id="sort-books" class="sort-select">
+                <option value="name">Название</option>
+                <option value="progress">Прогресс</option>
+                <option value="type">Формат</option>
+                <option value="recent">Недавние</option>
+                <option value="size">Размер</option>
+              </select>
+            </div>
           </div>
+          <div id="filter-chips" class="filter-chips"></div>
         </div>
         <div id="books-grid" class="books-grid"></div>
         <div class="library-footer-btns">
@@ -105,6 +125,8 @@
       <!-- Dynamic: PDF / EPUB / Text / FB2 -->
     </div>
 
+    <div id="tts-live-caption" class="tts-live-caption hidden" aria-live="polite"></div>
+
     <!-- Progress bar under content -->
     <div class="reading-progress-bar">
       <div id="reading-progress-fill" class="reading-progress-fill"></div>
@@ -123,8 +145,9 @@
       <button id="tts-play" class="tts-btn" title="Озвучить">▶</button>
       <button id="tts-stop" class="tts-btn" title="Стоп">⏹</button>
       <select id="tts-voice" class="tts-select" title="Голос"></select>
-      <input type="range" id="tts-rate" min="0.5" max="2.5" step="0.1" value="1" title="Скорость">
+      <input type="range" id="tts-rate" min="0.5" max="2.5" step="0.05" value="1" title="Скорость">
       <span id="tts-rate-label">1.0×</span>
+      <button id="tts-more-btn" class="tts-btn small" title="Параметры озвучки">⚙</button>
       <button id="tts-timer-btn" class="tts-btn small" title="Таймер сна">⏱</button>
     </div>
   </div>
@@ -241,6 +264,26 @@
       </div>
 
       <button id="close-modal" class="primary-btn">Готово</button>
+    </div>
+  </div>
+
+  <!-- ===== TTS SETTINGS MODAL ===== -->
+  <div id="tts-settings-overlay" class="modal-overlay hidden">
+    <div class="modal settings-modal tts-settings-modal">
+      <h3>🎙 Настройки озвучки</h3>
+      <div class="setting-group">
+        <label>Выразительность <span id="tts-pitch-label">1.00</span></label>
+        <input type="range" id="tts-pitch" min="0.7" max="1.3" step="0.02" value="1">
+      </div>
+      <div class="setting-group">
+        <label>Пауза между фразами <span id="tts-pause-label">220 мс</span></label>
+        <input type="range" id="tts-pause" min="0" max="800" step="20" value="220">
+      </div>
+      <div class="setting-group">
+        <label class="checkbox-label"><input type="checkbox" id="tts-smart-pause" checked> Умные паузы на абзацах, тире и заголовках</label>
+      </div>
+      <p class="settings-note">На iPhone Safari интонация зависит от установленного системного голоса. Приложение использует подходящий голос для языка, небольшие изменения pitch и отдельные паузы между фразами.</p>
+      <button id="close-tts-settings" class="primary-btn">Готово</button>
     </div>
   </div>
 
