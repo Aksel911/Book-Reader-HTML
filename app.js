@@ -584,8 +584,8 @@
 
   // ===== PDF =====
   async function openPDF(book) {
-    if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js не загружен');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.js';
+    if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js не загружен. Обновите страницу (Ctrl+Shift+R). Если не помогло — перезалейте libs/pdf.min.js');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
     const buf = await book.file.arrayBuffer();
     state.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
     state.pdfTotal = state.pdfDoc.numPages;

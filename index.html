@@ -5,18 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#1a1a2e">
+  <meta name="theme-color" content="#0c0c0f">
   <meta name="description" content="Умный читатель книг с озвучкой для iPhone">
-  <title>Умный Читатель — Book Reader</title>
+  <title>Book Reader</title>
   <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  <!-- PDF.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.js"></script>
-  <!-- JSZip for EPUB -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <!-- epub.js -->
-  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
-  <!-- DjVu.js (local for reliability) -->
+  <!-- All libraries local — no CDN 404s -->
+  <script src="libs/pdf.min.js"></script>
+  <script src="libs/jszip.min.js"></script>
+  <script src="libs/epub.min.js"></script>
   <script src="libs/djvu.js"></script>
   <script src="libs/djvu_viewer.js"></script>
 </head>
@@ -25,8 +25,8 @@
   <div id="library-screen" class="screen active">
     <header class="app-header">
       <div class="header-content">
-        <h1 class="logo">📚 Умный Читатель</h1>
-        <p class="subtitle">Ваша библиотека на iPhone</p>
+        <h1 class="logo">Book Reader</h1>
+        <p class="subtitle">Локальная библиотека · офлайн</p>
       </div>
       <div class="header-actions">
         <button id="stats-btn" class="icon-btn" title="Статистика">📊</button>
@@ -36,9 +36,9 @@
 
     <main class="library-main">
       <div class="welcome-card" id="welcome-card">
-        <div class="welcome-icon">📖</div>
-        <h2>Выберите папку с книгами</h2>
-        <p>Поддерживаются PDF, EPUB, FB2, DJVU, TXT, HTML + ZIP/RAR архивы.<br>Рекурсивный поиск + вход внутрь архивов.</p>
+        <div class="welcome-icon">📚</div>
+        <h2>Ваша библиотека</h2>
+        <p>PDF, EPUB, FB2, DJVU, TXT, HTML и ZIP-архивы.<br>Файлы остаются на устройстве — ничего не загружается в облако.</p>
         <label class="select-folder-btn">
           <input type="file" id="folder-input" webkitdirectory directory multiple
                  accept=".pdf,.epub,.fb2,.djvu,.djv,.txt,.html,.htm,.zip,.rar">
