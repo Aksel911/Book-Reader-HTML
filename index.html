@@ -6,6 +6,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#0c0c0f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
   <meta name="description" content="Умный читатель книг с озвучкой для iPhone">
   <title>Book Reader</title>
   <link rel="manifest" href="manifest.json">
@@ -188,6 +192,17 @@
           <button data-theme="sepia" class="theme-opt">📜 Сепия</button>
           <button data-theme="dark" class="theme-opt active">🌙 Тёмная</button>
         </div>
+      </div>
+
+      <div class="setting-group">
+        <label>Вид чтения</label>
+        <div class="reading-mode-grid" id="reading-mode-options">
+          <button type="button" class="reading-mode-opt" data-reading-mode="scroll-vertical"><span>↕</span><strong>Вертикально</strong><small>Непрерывная прокрутка</small></button>
+          <button type="button" class="reading-mode-opt" data-reading-mode="paged"><span>⇥</span><strong>Страницы</strong><small>Листание влево/вправо</small></button>
+          <button type="button" class="reading-mode-opt" data-reading-mode="scroll-horizontal"><span>↔</span><strong>Горизонтально</strong><small>Прокрутка по колонкам</small></button>
+          <button type="button" class="reading-mode-opt" data-reading-mode="two-page"><span>▥</span><strong>2 страницы</strong><small>Лучше на ПК / iPad</small></button>
+        </div>
+        <div class="settings-note-inline">Для EPUB/PDF часть режимов зависит от формата; приложение выберет ближайший поддерживаемый вариант.</div>
       </div>
 
       <div class="setting-group">

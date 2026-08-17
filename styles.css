@@ -1327,3 +1327,100 @@ body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:
   .books-grid { grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 20px; }
   .book-cover { height: 286px; }
 }
+
+/* ===== Reading modes / professional reader layout ===== */
+.reading-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.reading-mode-opt {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 12px 10px;
+  text-align: left;
+  cursor: pointer;
+  min-height: 86px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: transform .16s ease, border-color .16s ease, background .16s ease;
+}
+.reading-mode-opt:hover { transform: translateY(-1px); }
+.reading-mode-opt > span { font-size: 20px; line-height: 1; color: var(--accent); }
+.reading-mode-opt strong { font-size: 14px; }
+.reading-mode-opt small { color: var(--muted); font-size: 11px; line-height: 1.25; }
+.reading-mode-opt.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent) inset;
+}
+.settings-note-inline { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+html[data-reading-mode="scroll-vertical"] .reader-content {
+  overflow: auto;
+}
+html[data-reading-mode="scroll-horizontal"] .reader-content {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+html[data-reading-mode="scroll-vertical"] .text-reader {
+  max-width: 780px;
+  margin: 0 auto;
+}
+html[data-reading-mode="scroll-horizontal"] .text-reader {
+  max-width: none;
+  width: max-content;
+  min-width: 100%;
+  height: calc(100vh - 180px);
+  column-width: min(70vw, 700px);
+  column-gap: 70px;
+  column-fill: auto;
+  padding: 42px 5vw 80px;
+  white-space: normal;
+}
+html[data-reading-mode="scroll-horizontal"] .text-reader .read-paragraph {
+  break-inside: avoid;
+}
+html[data-reading-mode="two-page"] .text-reader {
+  max-width: 1180px;
+  column-count: 2;
+  column-gap: 72px;
+  padding-left: 56px;
+  padding-right: 56px;
+}
+html[data-reading-mode="paged"] .text-reader,
+html[data-reading-mode="two-page"] .text-reader {
+  padding-top: 42px;
+}
+
+.reading-mode-toggle { display:none; }
+
+@media (min-width: 900px) {
+  .settings-modal { max-width: 720px; }
+  .reader-header { padding-left: 24px; padding-right: 24px; }
+  .reader-content { background: radial-gradient(circle at top, color-mix(in srgb, var(--surface) 55%, transparent), transparent 55%), var(--bg); }
+  #text-reader { min-height: 100%; }
+}
+
+@media (max-width: 700px) {
+  .reading-mode-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .reading-mode-opt { min-height: 74px; padding: 10px; }
+  .reading-mode-opt small { display: none; }
+  html[data-reading-mode="two-page"] .text-reader { column-count: 1; }
+  html[data-reading-mode="scroll-horizontal"] .text-reader {
+    height: calc(100dvh - 170px);
+    column-width: 84vw;
+    column-gap: 34px;
+    padding-left: 7vw;
+    padding-right: 7vw;
+  }
+}
+
+@supports not (color: color-mix(in srgb, black, white)) {
+  .reading-mode-opt.active { background: var(--surface-2); }
+}

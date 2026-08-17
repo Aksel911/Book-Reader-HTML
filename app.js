@@ -28,6 +28,7 @@
     fontSize: parseInt(localStorage.getItem('fontSize') || '18', 10),
     lineHeight: parseFloat(localStorage.getItem('lineHeight') || '1.7'),
     fontFamily: localStorage.getItem('fontFamily') || 'system-ui',
+    readingMode: localStorage.getItem('readingMode') || 'scroll-vertical',
     ttsRate: parseFloat(localStorage.getItem('ttsRate') || '1'),
     ttsPitch: parseFloat(localStorage.getItem('ttsPitch') || '1'),
     ttsPause: parseInt(localStorage.getItem('ttsPause') || '220', 10),
@@ -247,11 +248,48 @@
     document.documentElement.style.setProperty('--reader-font-size', state.fontSize + 'px');
     document.documentElement.style.setProperty('--reader-line-height', state.lineHeight);
     document.documentElement.style.setProperty('--reader-font-family', state.fontFamily);
+    document.documentElement.dataset.readingMode = state.readingMode;
     const el = $('#text-reader');
     if (el) {
       el.style.fontSize = state.fontSize + 'px';
       el.style.lineHeight = state.lineHeight;
       el.style.fontFamily = state.fontFamily;
+    }
+    $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b.dataset.readingMode === state.readingMode));
+  }
+
+  async function setReadingMode(mode, rerender = true) {
+    const allowed = new Set(['scroll-vertical','paged','scroll-horizontal','two-page']);
+    if (!allowed.has(mode)) mode = 'scroll-vertical';
+    state.readingMode = mode;
+    localStorage.setItem('readingMode', mode);
+    applyReaderStyles();
+    if (rerender && state.currentType && ['txt','html','htm','fb2'].includes(state.currentType)) {
+      renderTextPage(true);
+    } else if (state.currentType === 'epub' && state.epubRendition) {
+      const book = state.currentBook;
+      const loc = state.epubRendition.currentLocation()?.start?.cfi || localStorage.getItem('epubLoc:' + (book?.key || book?.path));
+      try {
+        state.epubRendition.destroy();
+      } catch (e) {}
+      if (book) {
+        const area = $('#epub-area');
+        if (area) area.innerHTML = '';
+        const flow = state.readingMode === 'scroll-vertical' ? 'scrolled-continuous' : 'paginated';
+        state.epubRendition = state.epubBook.renderTo(area, { width:'100%', height:'100%', flow, manager: state.readingMode === 'scroll-vertical' ? 'continuous' : 'default', spread: state.readingMode === 'two-page' ? 'always' : 'auto' });
+        try { await state.epubRendition.display(loc || undefined); } catch (e) { console.warn('EPUB mode switch', e); }
+        state.epubRendition.on('relocated', (loc2) => {
+          try {
+            const percent = loc2.start.percentage || 0;
+            state.currentBook.progress = percent;
+            setProgress(book.key || book.path, percent);
+            localStorage.setItem('epubLoc:' + (book.key || book.path), loc2.start.cfi);
+            $('#page-num').textContent = Math.round(percent * 100) + '%';
+            $('#page-count').textContent = '100%';
+            updateProgressBar();
+          } catch (e) {}
+        });
+      }
     }
   }
 
@@ -919,8 +957,11 @@
     await state.epubBook.ready;
 
     $('#reader-content').innerHTML = '<div id="epub-area"></div>';
+    const flow = state.readingMode === 'scroll-vertical' ? 'scrolled-continuous' : 'paginated';
     state.epubRendition = state.epubBook.renderTo($('#epub-area'), {
-      width: '100%', height: '100%', flow: 'paginated'
+      width: '100%', height: '100%', flow,
+      manager: state.readingMode === 'scroll-vertical' ? 'continuous' : 'default',
+      spread: state.readingMode === 'two-page' ? 'always' : 'auto'
     });
 
     const saved = localStorage.getItem('epubLoc:' + (book.key || book.path));
@@ -1063,7 +1104,9 @@
   function renderTextPage(skipProgress) {
     const el = $('#text-reader');
     if (!el) return;
-    state.textContent = state.textPages[state.textPage] || '';
+    const continuous = state.readingMode === 'scroll-vertical' || state.readingMode === 'scroll-horizontal';
+    state.textContent = continuous ? (state.fullText || state.textPages.join('\n\n')) : (state.textPages[state.textPage] || '');
+    el.classList.toggle('reading-continuous', continuous);
     el.innerHTML = '';
     const frag = document.createDocumentFragment();
     const paragraphs = String(state.textContent).replace(/\r\n?/g, '\n').split(/\n\s*\n/);
@@ -1087,12 +1130,12 @@
     });
     el.appendChild(frag);
     applyReaderStyles();
-    $('#page-num').textContent = state.textPage + 1;
-    $('#page-count').textContent = state.textPages.length;
+    $('#page-num').textContent = continuous ? '∞' : state.textPage + 1;
+    $('#page-count').textContent = continuous ? '∞' : state.textPages.length;
     if (!skipProgress) {
-      const prog = (state.textPage + 1) / state.textPages.length;
-      state.currentBook.progress = prog;
-      setProgress(state.currentBook.key || state.currentBook.path, prog);
+      const prog = continuous ? ((el.scrollTop || 0) / Math.max(1, el.scrollHeight - el.clientHeight)) : ((state.textPage + 1) / state.textPages.length);
+      state.currentBook.progress = Math.min(1, Math.max(0, prog));
+      setProgress(state.currentBook.key || state.currentBook.path, state.currentBook.progress);
     }
     updateProgressBar();
   }
@@ -1569,6 +1612,17 @@
     });
   }
 
+  $('#reader-content').addEventListener('scroll', () => {
+    if (!state.currentBook || !['txt','html','htm','fb2'].includes(state.currentType)) return;
+    if (!['scroll-vertical','scroll-horizontal'].includes(state.readingMode)) return;
+    const max = Math.max(1, (state.readingMode === 'scroll-horizontal' ? $('#text-reader')?.scrollWidth - $('#text-reader')?.clientWidth : $('#reader-content').scrollHeight - $('#reader-content').clientHeight));
+    const pos = state.readingMode === 'scroll-horizontal' ? ($('#reader-content').scrollLeft || 0) : ($('#reader-content').scrollTop || 0);
+    const prog = Math.min(1, Math.max(0, pos / max));
+    state.currentBook.progress = prog;
+    setProgress(state.currentBook.key || state.currentBook.path, prog);
+    updateProgressBar();
+  }, { passive: true });
+
   // ===== In-book search =====
   $('#search-in-book-btn').addEventListener('click', () => {
     $('#search-overlay').classList.remove('hidden');
@@ -1715,6 +1769,10 @@
     applyReaderStyles();
   });
 
+  $$('.reading-mode-opt').forEach(btn => {
+    btn.addEventListener('click', () => setReadingMode(btn.dataset.readingMode));
+  });
+
   $('#tts-continuous').addEventListener('change', e => { state.continuousTTS = e.target.checked; });
   $('#tts-highlight').addEventListener('change', e => { state.highlightTTS = e.target.checked; });
 
@@ -1808,6 +1866,7 @@
   $('#line-height').value = state.lineHeight;
   $('#line-height-label').textContent = state.lineHeight.toFixed(1);
   $('#font-family').value = state.fontFamily;
+  setReadingMode(state.readingMode, false);
   $('#tts-rate').value = state.ttsRate;
   $('#tts-rate-label').textContent = state.ttsRate.toFixed(1) + '×';
   applyReaderStyles();
