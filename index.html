@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="description" content="Умный читатель книг с озвучкой для iPhone">
+  <title>Умный Читатель — Book Reader</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css">
+  <!-- PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.js"></script>
+  <!-- JSZip for EPUB -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- epub.js -->
+  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+  <!-- DjVu.js (local for reliability) -->
+  <script src="libs/djvu.js"></script>
+  <script src="libs/djvu_viewer.js"></script>
+</head>
+<body>
+  <!-- ===== LIBRARY SCREEN ===== -->
+  <div id="library-screen" class="screen active">
+    <header class="app-header">
+      <div class="header-content">
+        <h1 class="logo">📚 Умный Читатель</h1>
+        <p class="subtitle">Ваша библиотека на iPhone</p>
+      </div>
+      <div class="header-actions">
+        <button id="stats-btn" class="icon-btn" title="Статистика">📊</button>
+        <button id="theme-toggle" class="icon-btn" title="Тема">🌓</button>
+      </div>
+    </header>
+
+    <main class="library-main">
+      <div class="welcome-card" id="welcome-card">
+        <div class="welcome-icon">📖</div>
+        <h2>Выберите папку с книгами</h2>
+        <p>Поддерживаются PDF, EPUB, FB2, DJVU, TXT, HTML + ZIP/RAR архивы.<br>Рекурсивный поиск + вход внутрь архивов.</p>
+        <label class="select-folder-btn">
+          <input type="file" id="folder-input" webkitdirectory directory multiple
+                 accept=".pdf,.epub,.fb2,.djvu,.djv,.txt,.html,.htm,.zip,.rar">
+          <span>📁 Выбрать папку</span>
+        </label>
+        <p class="hint">iOS 18.4+ — полноценный выбор папки.<br>На старых версиях выбирайте файлы.</p>
+      </div>
+
+      <div id="library-content" class="hidden">
+        <div class="library-toolbar">
+          <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
+          <div class="search-box">
+            <input type="search" id="search-books" placeholder="🔍 Поиск по названию или пути...">
+          </div>
+          <div class="toolbar-row">
+            <div class="stats" id="library-stats"></div>
+            <select id="sort-books" class="sort-select">
+              <option value="name">По названию</option>
+              <option value="progress">По прогрессу</option>
+              <option value="type">По формату</option>
+              <option value="recent">Недавние</option>
+              <option value="favorites">⭐ Избранное</option>
+            </select>
+          </div>
+        </div>
+        <div id="books-grid" class="books-grid"></div>
+        <div class="library-footer-btns">
+          <button id="reselect-folder" class="secondary-btn">📁 Другая папка</button>
+          <button id="export-progress" class="secondary-btn">💾 Экспорт прогресса</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ===== READER SCREEN ===== -->
+  <div id="reader-screen" class="screen">
+    <header class="reader-header">
+      <button id="back-to-library" class="icon-btn" title="Назад">←</button>
+      <h2 id="book-title" class="book-title-header">Книга</h2>
+      <div class="reader-header-actions">
+        <button id="toc-btn" class="icon-btn" title="Оглавление">☰</button>
+        <button id="bookmark-btn" class="icon-btn" title="Закладка">🔖</button>
+        <button id="search-in-book-btn" class="icon-btn" title="Поиск">🔍</button>
+        <button id="reader-menu-btn" class="icon-btn" title="Меню">⋮</button>
+      </div>
+    </header>
+
+    <div id="reader-content" class="reader-content">
+      <!-- Dynamic: PDF / EPUB / Text / FB2 -->
+    </div>
+
+    <!-- Progress bar under content -->
+    <div class="reading-progress-bar">
+      <div id="reading-progress-fill" class="reading-progress-fill"></div>
+    </div>
+
+    <div class="reader-controls">
+      <button id="prev-page" class="ctrl-btn" title="Назад">‹</button>
+      <div class="page-info">
+        <span id="page-num">1</span> / <span id="page-count">1</span>
+      </div>
+      <button id="next-page" class="ctrl-btn" title="Вперёд">›</button>
+    </div>
+
+    <!-- TTS Bar -->
+    <div id="tts-bar" class="tts-bar">
+      <button id="tts-play" class="tts-btn" title="Озвучить">▶</button>
+      <button id="tts-stop" class="tts-btn" title="Стоп">⏹</button>
+      <select id="tts-voice" class="tts-select" title="Голос"></select>
+      <input type="range" id="tts-rate" min="0.5" max="2.5" step="0.1" value="1" title="Скорость">
+      <span id="tts-rate-label">1.0×</span>
+      <button id="tts-timer-btn" class="tts-btn small" title="Таймер сна">⏱</button>
+    </div>
+  </div>
+
+  <!-- ===== TOC / BOOKMARKS SIDE PANEL ===== -->
+  <div id="side-panel" class="side-panel hidden">
+    <div class="side-panel-header">
+      <div class="side-tabs">
+        <button class="side-tab active" data-tab="toc">Оглавление</button>
+        <button class="side-tab" data-tab="bookmarks">Закладки</button>
+      </div>
+      <button id="close-side-panel" class="icon-btn">✕</button>
+    </div>
+    <div id="toc-content" class="side-content"></div>
+    <div id="bookmarks-content" class="side-content hidden"></div>
+  </div>
+
+  <!-- ===== SEARCH IN BOOK OVERLAY ===== -->
+  <div id="search-overlay" class="modal-overlay hidden">
+    <div class="modal search-modal">
+      <h3>Поиск в книге</h3>
+      <input type="search" id="in-book-search" placeholder="Введите текст...">
+      <div id="search-results" class="search-results"></div>
+      <button id="close-search" class="primary-btn">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- ===== SETTINGS MODAL ===== -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal settings-modal">
+      <h3>Настройки чтения</h3>
+
+      <div class="setting-group">
+        <label>Тема</label>
+        <div class="theme-options">
+          <button data-theme="light" class="theme-opt">☀️ Светлая</button>
+          <button data-theme="sepia" class="theme-opt">📜 Сепия</button>
+          <button data-theme="dark" class="theme-opt active">🌙 Тёмная</button>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <label>Размер шрифта <span id="font-size-label">18px</span></label>
+        <input type="range" id="font-size" min="14" max="32" value="18">
+      </div>
+
+      <div class="setting-group">
+        <label>Межстрочный интервал <span id="line-height-label">1.7</span></label>
+        <input type="range" id="line-height" min="1.3" max="2.2" step="0.1" value="1.7">
+      </div>
+
+      <div class="setting-group">
+        <label>Шрифт</label>
+        <select id="font-family">
+          <option value="system-ui">Системный</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="'Times New Roman', serif">Times</option>
+          <option value="'Palatino Linotype', serif">Palatino</option>
+          <option value="Arial, sans-serif">Arial</option>
+          <option value="'Helvetica Neue', sans-serif">Helvetica</option>
+        </select>
+      </div>
+
+      <div class="setting-group">
+        <label>Язык озвучки</label>
+        <select id="tts-lang-override">
+          <option value="auto">Автоопределение</option>
+          <option value="ru-RU">Русский</option>
+          <option value="en-US">English (US)</option>
+          <option value="en-GB">English (UK)</option>
+          <option value="uk-UA">Українська</option>
+          <option value="de-DE">Deutsch</option>
+          <option value="fr-FR">Français</option>
+          <option value="es-ES">Español</option>
+          <option value="it-IT">Italiano</option>
+          <option value="pt-BR">Português</option>
+          <option value="zh-CN">中文</option>
+          <option value="ja-JP">日本語</option>
+          <option value="ko-KR">한국어</option>
+        </select>
+      </div>
+
+      <div class="setting-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="tts-continuous" checked>
+          Непрерывная озвучка (страницы/главы)
+        </label>
+      </div>
+
+      <div class="setting-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="tts-highlight" checked>
+          Подсветка текста при озвучке
+        </label>
+      </div>
+
+      <div class="setting-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="keep-screen-on">
+          Не гасить экран во время чтения
+        </label>
+      </div>
+
+      <div class="setting-group" id="fav-tags-section">
+        <label>Избранное и теги текущей книги</label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="toggle-favorite">
+          ⭐ В избранном
+        </label>
+        <div style="margin-top:10px">
+          <input type="text" id="tag-input" placeholder="Новый тег (Enter)" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);margin-bottom:8px">
+          <div id="current-tags" class="tag-editor"></div>
+        </div>
+      </div>
+
+      <button id="close-modal" class="primary-btn">Готово</button>
+    </div>
+  </div>
+
+  <!-- ===== SLEEP TIMER MODAL ===== -->
+  <div id="timer-overlay" class="modal-overlay hidden">
+    <div class="modal timer-modal">
+      <h3>⏱ Таймер сна</h3>
+      <p class="timer-desc">Озвучка остановится через:</p>
+      <div class="timer-options">
+        <button class="timer-opt" data-min="5">5 мин</button>
+        <button class="timer-opt" data-min="10">10 мин</button>
+        <button class="timer-opt" data-min="15">15 мин</button>
+        <button class="timer-opt" data-min="30">30 мин</button>
+        <button class="timer-opt" data-min="45">45 мин</button>
+        <button class="timer-opt" data-min="60">1 час</button>
+      </div>
+      <button id="timer-cancel" class="secondary-btn full">Отменить таймер</button>
+      <button id="close-timer" class="primary-btn">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- ===== STATS MODAL ===== -->
+  <div id="stats-overlay" class="modal-overlay hidden">
+    <div class="modal stats-modal">
+      <h3>📊 Статистика чтения</h3>
+      <div id="stats-content" class="stats-content"></div>
+      <button id="close-stats" class="primary-btn">Закрыть</button>
+    </div>
+  </div>
+
+  <!-- ===== BOOKMARK NOTE MODAL ===== -->
+  <div id="bookmark-note-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>🔖 Новая закладка</h3>
+      <textarea id="bookmark-note" placeholder="Заметка (необязательно)..." rows="3"></textarea>
+      <div class="btn-row">
+        <button id="save-bookmark" class="primary-btn">Сохранить</button>
+        <button id="cancel-bookmark" class="secondary-btn">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading -->
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <p id="loading-text">Загрузка...</p>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
