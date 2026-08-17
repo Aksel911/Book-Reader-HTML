@@ -14,12 +14,8 @@
   <title>Book Reader</title>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="styles.css">
-  <!-- All libraries local — no CDN 404s -->
-  <script src="libs/pdf.min.js"></script>
+  <!-- Lightweight only at start; PDF / EPUB / DJVU load on demand for faster first paint -->
   <script src="libs/jszip.min.js"></script>
-  <script src="libs/epub.min.js"></script>
-  <script src="libs/djvu.js"></script>
-  <script src="libs/djvu_viewer.js"></script>
 </head>
 <body>
   <!-- ===== LIBRARY SCREEN ===== -->
@@ -212,7 +208,7 @@
           <button type="button" class="reading-mode-opt" data-reading-mode="scroll-horizontal"><span>↔</span><strong>Горизонтально</strong><small>Прокрутка по колонкам</small></button>
           <button type="button" class="reading-mode-opt" data-reading-mode="two-page"><span>▥</span><strong>2 страницы</strong><small>Лучше на ПК / iPad</small></button>
         </div>
-        <div class="settings-note-inline">Для EPUB/PDF часть режимов зависит от формата; приложение выберет ближайший поддерживаемый вариант.</div>
+        <div class="settings-note-inline">TXT/FB2/HTML — все режимы. PDF — вертикальный скролл всех страниц или по одной; горизонтально — лента страниц. EPUB — непрерывный скролл или страницы (2 страницы на широком экране). DJVU — листание страницами.</div>
       </div>
 
       <div class="setting-group">

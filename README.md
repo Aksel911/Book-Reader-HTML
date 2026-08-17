@@ -237,3 +237,17 @@ python3 -m http.server 8080
 - Fixed broken PDF text layer (`viewport` bug) so highlighting and text extraction work again.
 - **Вид чтения**: mode switch is more reliable on iOS Safari (immediate UI feedback, forced reflow, auto-close settings on phone, PDF re-render).
 - **Сворачиваемые панели**: Progress bar, TTS bar and the whole bottom chrome can be collapsed/expanded (buttons + double-tap content + floating «Панели» pill). State is remembered.
+
+### v6.2 — reading modes that actually work on iPhone + speed
+- **Режимы чтения переписаны** (TXT/FB2/HTML):
+  - **Вертикально** — непрерывный скролл всего текста
+  - **Страницы** — страницы под размер экрана, листание кнопками/свайпом
+  - **Горизонтально** — полосы-страницы + scroll-snap (без CSS multi-column, который ломается в iOS Safari)
+  - **2 страницы** — две колонки на широких экранах
+- Пагинация адаптируется под размер шрифта и высоту viewport.
+- **Скорость**: PDF.js / EPUB / DJVU больше не грузятся при старте (~2MB отложено). Подключаются только при открытии соответствующего формата.
+
+### v6.3
+- **Режимы чтения для PDF**: вертикальный непрерывный скролл (lazy-render), горизонтальная лента страниц, обычное листание по одной.
+- **EPUB**: корректнее spread для «2 страницы» и горизонтали.
+- **Полные имена папок и пути**: без обрезки ellipsis; карточки папок на всю ширину сетки; в meta виден полный path.

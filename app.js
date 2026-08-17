@@ -62,6 +62,49 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => document.querySelectorAll(s);
 
+  // ===== Lazy library loaders (faster first paint on iPhone) =====
+  const _libPromises = {};
+  function loadScriptOnce(src) {
+    if (_libPromises[src]) return _libPromises[src];
+    _libPromises[src] = new Promise((resolve, reject) => {
+      const existing = document.querySelector(`script[data-lib="${src}"]`);
+      if (existing) {
+        if (existing.dataset.loaded === '1') return resolve();
+        existing.addEventListener('load', () => resolve());
+        existing.addEventListener('error', () => reject(new Error('Failed: ' + src)));
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.dataset.lib = src;
+      s.onload = () => { s.dataset.loaded = '1'; resolve(); };
+      s.onerror = () => reject(new Error('Не удалось загрузить ' + src));
+      document.head.appendChild(s);
+    });
+    return _libPromises[src];
+  }
+  async function ensurePDF() {
+    if (typeof pdfjsLib !== 'undefined') return;
+    showLoading('Загрузка PDF-движка…');
+    await loadScriptOnce('libs/pdf.min.js');
+    if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js не загружен');
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+  }
+  async function ensureEPUB() {
+    if (typeof ePub !== 'undefined') return;
+    showLoading('Загрузка EPUB-движка…');
+    await loadScriptOnce('libs/epub.min.js');
+    if (typeof ePub === 'undefined') throw new Error('epub.js не загружен');
+  }
+  async function ensureDJVU() {
+    if (typeof DjVu !== 'undefined' && DjVu.Viewer) return;
+    showLoading('Загрузка DJVU-движка…');
+    await loadScriptOnce('libs/djvu.js');
+    await loadScriptOnce('libs/djvu_viewer.js');
+    if (typeof DjVu === 'undefined' || !DjVu.Viewer) throw new Error('DjVu.js не загружен');
+  }
+
   // ===== Utils =====
   function showLoading(t = 'Загрузка...') {
     $('#loading-text').textContent = t;
@@ -351,12 +394,14 @@
         const area = $('#epub-area');
         if (area) area.innerHTML = '';
         const flow = state.readingMode === 'scroll-vertical' ? 'scrolled-continuous' : 'paginated';
+        const spread = state.readingMode === 'two-page' ? 'always'
+          : (state.readingMode === 'scroll-horizontal' ? 'none' : 'auto');
         state.epubRendition = state.epubBook.renderTo(area || $('#reader-content'), {
           width: '100%',
           height: '100%',
           flow,
           manager: state.readingMode === 'scroll-vertical' ? 'continuous' : 'default',
-          spread: state.readingMode === 'two-page' ? 'always' : 'auto'
+          spread
         });
         try { await state.epubRendition.display(loc || undefined); } catch (e) { console.warn('EPUB mode switch', e); }
         state.epubRendition.on('relocated', (loc2) => {
@@ -373,8 +418,7 @@
           } catch (e) {}
         });
       } else if (state.currentType === 'pdf' && state.pdfDoc) {
-        // Re-render current page so layout/overflow from data-reading-mode applies cleanly
-        await renderPDFPage(state.pdfPage);
+        await renderPDFByMode();
       }
     } catch (e) {
       console.warn('setReadingMode failed', e);
@@ -597,6 +641,7 @@
       host.dataset.previewUrl = url;
       return;
     }
+    try { await ensurePDF(); } catch (e) { return; }
     if (!window.pdfjsLib) return;
     const buf = await book.file.arrayBuffer();
     const doc = await pdfjsLib.getDocument({data:buf, disableAutoFetch:true, disableStream:true}).promise;
@@ -722,7 +767,8 @@
     for(const folder of visibleFolders){
       const card=document.createElement('article');
       card.className='folder-card';
-      card.innerHTML=`<div class="folder-icon">▱</div><div class="folder-card-body"><div class="folder-name">${escapeHtml(folder.name)}</div><div class="folder-meta">${folder.count} ${folder.count===1?'файл':'файлов'}</div></div><div class="folder-arrow">›</div>`;
+      card.title = folder.path;
+      card.innerHTML=`<div class="folder-icon">▱</div><div class="folder-card-body"><div class="folder-name" title="${escapeHtml(folder.path)}">${escapeHtml(folder.name)}</div><div class="folder-meta">${folder.count} ${folder.count===1?'файл':'файлов'} · ${escapeHtml(folder.path)}</div></div><div class="folder-arrow">›</div>`;
       card.addEventListener('click',()=>{ state.folderStack.push({name:folder.name,path:folder.path}); renderLibrary($('#search-books').value); });
       grid.appendChild(card);
     }
@@ -736,7 +782,7 @@
         const key=book.key||book.path; const card=document.createElement('article'); const st=getBookStatus(book);
         card.className=`book-card status-${st}`+(getBookmarks(key).length?' has-bookmark':'');
         const fav=isFavorite(key); const tags=getTags(key); const progress=Math.min(100,Math.round((book.progress||0)*100));
-        card.innerHTML=`<button type="button" class="fav-star" title="${fav?'Убрать из избранного':'В избранное'}">${fav?'★':'☆'}</button>${bookCoverMarkup(book)}<div class="book-info"><div class="book-name" title="${escapeHtml(book.name)}">${escapeHtml(book.name)}</div><div class="book-meta"><span>${typeLabel(book.type)}</span><span>•</span><span>${formatSize(book.size||0)}</span></div>${book.path&&book.path.includes('/')?`<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path.split('/').slice(0,-1).join(' / '))}</div>`:''}${tags.length?`<div class="book-tags">${tags.slice(0,2).map(t=>`<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}<div class="book-progress"><div class="book-progress-bar" style="width:${progress}%"></div></div></div>`;
+        card.innerHTML=`<button type="button" class="fav-star" title="${fav?'Убрать из избранного':'В избранное'}">${fav?'★':'☆'}</button>${bookCoverMarkup(book)}<div class="book-info"><div class="book-name" title="${escapeHtml(book.name)}">${escapeHtml(book.name)}</div><div class="book-meta"><span>${typeLabel(book.type)}</span><span>•</span><span>${formatSize(book.size||0)}</span></div>${book.path&&book.path.includes('/')?`<div class="book-path" title="${escapeHtml(book.path)}">${escapeHtml(book.path)}</div>`:''}${tags.length?`<div class="book-tags">${tags.slice(0,2).map(t=>`<span class="book-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}<div class="book-progress"><div class="book-progress-bar" style="width:${progress}%"></div></div></div>`;
         card.querySelector('.fav-star').addEventListener('click',e=>{e.stopPropagation();toggleFavorite(key);renderLibrary($('#search-books').value);});
         card.addEventListener('click',()=>openBook(book)); grid.appendChild(card); observePreview(card,book);
       }
@@ -903,9 +949,7 @@
   let djvuViewerInstance = null;
 
   async function openDJVU(book) {
-    if (typeof DjVu === 'undefined' || !DjVu.Viewer) {
-      throw new Error('DjVu.js не загружен. Проверьте libs/djvu.js и libs/djvu_viewer.js');
-    }
+    await ensureDJVU();
 
     // Clean previous
     if (djvuViewerInstance) {
@@ -988,37 +1032,35 @@
 
   // ===== PDF =====
   async function openPDF(book) {
-    if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js не загружен. Обновите страницу (Ctrl+Shift+R). Если не помогло — перезалейте libs/pdf.min.js');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+    await ensurePDF();
     const buf = await book.file.arrayBuffer();
     state.pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
     state.pdfTotal = state.pdfDoc.numPages;
     state.pdfPage = Math.max(1, Math.min(state.pdfTotal, Math.round(book.progress * state.pdfTotal) || 1));
     $('#reader-content').innerHTML = '<div id="pdf-viewer"></div>';
     $('#page-count').textContent = state.pdfTotal;
-    await renderPDFPage(state.pdfPage);
+    await renderPDFByMode();
   }
 
-  async function renderPDFPage(num) {
+  function isPdfContinuous() {
+    return state.readingMode === 'scroll-vertical' || state.readingMode === 'scroll-horizontal';
+  }
+
+  async function renderPDFByMode() {
     if (!state.pdfDoc) return;
-    state.pdfPage = num;
-    $('#page-num').textContent = num;
+    if (isPdfContinuous()) await renderPDFContinuous();
+    else await renderPDFPage(state.pdfPage);
+  }
+
+  async function paintPdfPageToWrap(num, containerWidth) {
     const page = await state.pdfDoc.getPage(num);
-
-    // High-DPI (Retina) rendering for sharp text/images on iPhone
     const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
-    const container = $('#reader-content');
-    const containerWidth = Math.max(280, (container?.clientWidth || window.innerWidth) - 20);
     const baseVp = page.getViewport({ scale: 1 });
-    // Cap CSS scale so very wide pages still fit; prefer sharper on phone
     const cssScale = Math.min(3.0, containerWidth / Math.max(1, baseVp.width));
-    const viewport = page.getViewport({ scale: cssScale }); // CSS-pixel viewport for layout & text layer
+    const viewport = page.getViewport({ scale: cssScale });
 
-    const viewer = $('#pdf-viewer');
-    viewer.innerHTML = '';
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { alpha: false });
-    // Internal buffer at device pixels for Retina sharpness
     canvas.width = Math.floor(viewport.width * dpr);
     canvas.height = Math.floor(viewport.height * dpr);
     canvas.style.width = Math.floor(viewport.width) + 'px';
@@ -1027,59 +1069,149 @@
 
     const pageWrap = document.createElement('div');
     pageWrap.className = 'pdf-page-wrap';
+    pageWrap.dataset.pageNum = String(num);
     pageWrap.style.width = Math.floor(viewport.width) + 'px';
     pageWrap.style.height = Math.floor(viewport.height) + 'px';
     pageWrap.appendChild(canvas);
-    viewer.appendChild(pageWrap);
 
-    // Scale drawing context so PDF.js paints into the high-res buffer
     if (dpr !== 1) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    await page.render({
-      canvasContext: ctx,
-      viewport,
-      intent: 'display'
-    }).promise;
+    await page.render({ canvasContext: ctx, viewport, intent: 'display' }).promise;
 
-    const tc = await page.getTextContent();
-    const textLayer = document.createElement('div');
-    textLayer.id = 'pdf-text-layer';
-    textLayer.className = 'pdf-text-layer';
-    pageWrap.appendChild(textLayer);
-    try {
-      if (pdfjsLib.renderTextLayer) {
-        const task = pdfjsLib.renderTextLayer({
-          textContentSource: tc,
-          container: textLayer,
-          viewport // match CSS size of canvas
-        });
-        if (task?.promise) await task.promise;
-      }
-    } catch (e) { console.debug('PDF text layer unavailable', e); }
-    const pageText = tc.items.map(i => i.str).join(' ');
-    state.textContent = pageText;
-    state.fullText = pageText;
-    if (pageText.length > 40) state.detectedLang = detectLanguage(pageText);
+    // Text layer only for the active/current page to keep continuous mode light
+    if (num === state.pdfPage) {
+      try {
+        const tc = await page.getTextContent();
+        const textLayer = document.createElement('div');
+        textLayer.id = 'pdf-text-layer';
+        textLayer.className = 'pdf-text-layer';
+        pageWrap.appendChild(textLayer);
+        if (pdfjsLib.renderTextLayer) {
+          const task = pdfjsLib.renderTextLayer({ textContentSource: tc, container: textLayer, viewport });
+          if (task?.promise) await task.promise;
+        }
+        const pageText = tc.items.map(i => i.str).join(' ');
+        state.textContent = pageText;
+        state.fullText = pageText;
+        if (pageText.length > 40) state.detectedLang = detectLanguage(pageText);
+      } catch (e) { console.debug('PDF text layer', e); }
+    }
+    return pageWrap;
+  }
+
+  async function renderPDFPage(num) {
+    if (!state.pdfDoc) return;
+    state.pdfPage = num;
+    $('#page-num').textContent = num;
+    $('#page-count').textContent = state.pdfTotal;
+    const container = $('#reader-content');
+    const containerWidth = Math.max(280, (container?.clientWidth || window.innerWidth) - 20);
+    const viewer = $('#pdf-viewer');
+    if (!viewer) return;
+    viewer.className = 'pdf-viewer pdf-viewer-paged';
+    viewer.innerHTML = '';
+    const wrap = await paintPdfPageToWrap(num, containerWidth);
+    viewer.appendChild(wrap);
 
     const prog = num / state.pdfTotal;
-    state.currentBook.progress = prog;
-    setProgress(state.currentBook.key || state.currentBook.path, prog);
+    if (state.currentBook) {
+      state.currentBook.progress = prog;
+      setProgress(state.currentBook.key || state.currentBook.path, prog);
+    }
     updateProgressBar();
     incStat('pagesRead');
   }
 
+  async function renderPDFContinuous() {
+    if (!state.pdfDoc) return;
+    const viewer = $('#pdf-viewer');
+    if (!viewer) return;
+    const container = $('#reader-content');
+    const containerWidth = Math.max(280, (container?.clientWidth || window.innerWidth) - 20);
+    const horizontal = state.readingMode === 'scroll-horizontal';
+
+    viewer.className = horizontal ? 'pdf-viewer pdf-viewer-horizontal' : 'pdf-viewer pdf-viewer-continuous';
+    viewer.innerHTML = '';
+
+    // Placeholders first for fast layout, then paint nearby pages
+    const placeholders = [];
+    for (let n = 1; n <= state.pdfTotal; n++) {
+      const ph = document.createElement('div');
+      ph.className = 'pdf-page-placeholder';
+      ph.dataset.pageNum = String(n);
+      ph.style.minHeight = horizontal ? '70vh' : '40vh';
+      ph.innerHTML = `<span class="pdf-ph-label">${n}</span>`;
+      viewer.appendChild(ph);
+      placeholders.push(ph);
+    }
+
+    const rendered = new Set();
+    const renderOne = async (n) => {
+      if (rendered.has(n) || n < 1 || n > state.pdfTotal) return;
+      rendered.add(n);
+      const ph = viewer.querySelector(`.pdf-page-placeholder[data-page-num="${n}"]`);
+      if (!ph) return;
+      try {
+        const wrap = await paintPdfPageToWrap(n, containerWidth);
+        ph.replaceWith(wrap);
+      } catch (e) {
+        rendered.delete(n);
+        console.warn('PDF page', n, e);
+      }
+    };
+
+    // Initial: current page ± 2
+    const start = Math.max(1, state.pdfPage - 1);
+    const end = Math.min(state.pdfTotal, state.pdfPage + 2);
+    for (let n = start; n <= end; n++) await renderOne(n);
+
+    // Scroll to current page
+    requestAnimationFrame(() => {
+      const target = viewer.querySelector(`[data-page-num="${state.pdfPage}"]`);
+      if (target) target.scrollIntoView({ block: horizontal ? 'nearest' : 'start', inline: horizontal ? 'start' : 'nearest', behavior: 'auto' });
+    });
+
+    // Lazy render on scroll
+    if (state._pdfIO) { try { state._pdfIO.disconnect(); } catch (e) {} }
+    state._pdfIO = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        const n = parseInt(entry.target.dataset.pageNum, 10);
+        if (n) {
+          renderOne(n);
+          // update current page indicator
+          state.pdfPage = n;
+          $('#page-num').textContent = n;
+          if (state.currentBook) {
+            const prog = n / state.pdfTotal;
+            state.currentBook.progress = prog;
+            setProgress(state.currentBook.key || state.currentBook.path, prog);
+          }
+          updateProgressBar();
+        }
+      });
+    }, { root: container, rootMargin: '200px 100px', threshold: 0.15 });
+
+    viewer.querySelectorAll('[data-page-num]').forEach(el => state._pdfIO.observe(el));
+    $('#page-num').textContent = state.pdfPage;
+    $('#page-count').textContent = state.pdfTotal;
+    updateProgressBar();
+  }
+
   // ===== EPUB =====
   async function openEPUB(book) {
-    if (typeof ePub === 'undefined') throw new Error('epub.js не загружен');
+    await ensureEPUB();
     const buf = await book.file.arrayBuffer();
     state.epubBook = ePub(buf);
     await state.epubBook.ready;
 
     $('#reader-content').innerHTML = '<div id="epub-area"></div>';
     const flow = state.readingMode === 'scroll-vertical' ? 'scrolled-continuous' : 'paginated';
+    const spread = state.readingMode === 'two-page' ? 'always'
+      : (state.readingMode === 'scroll-horizontal' ? 'none' : 'auto');
     state.epubRendition = state.epubBook.renderTo($('#epub-area'), {
       width: '100%', height: '100%', flow,
       manager: state.readingMode === 'scroll-vertical' ? 'continuous' : 'default',
-      spread: state.readingMode === 'two-page' ? 'always' : 'auto'
+      spread
     });
 
     const saved = localStorage.getItem('epubLoc:' + (book.key || book.path));
@@ -1207,28 +1339,54 @@
     return units;
   }
 
-  function paginateText(text, book) {
-    const pageSize = 2200;
-    state.textPages = [];
-    for (let i = 0; i < text.length; i += pageSize) state.textPages.push(text.slice(i, i + pageSize));
-    if (!state.textPages.length) state.textPages = [''];
-    state.textPage = Math.min(state.textPages.length - 1, Math.floor((book.progress || 0) * state.textPages.length) || 0);
-    state.textContent = state.textPages[state.textPage];
-
-    $('#reader-content').innerHTML = '<div class="text-reader" id="text-reader" aria-label="Текст книги"></div>';
-    renderTextPage(true);
+  function estimateCharsPerPage() {
+    const rc = $('#reader-content');
+    const h = Math.max(240, (rc?.clientHeight || window.innerHeight) - 24);
+    const w = Math.max(200, Math.min(720, (rc?.clientWidth || window.innerWidth) - 40));
+    const fs = state.fontSize || 18;
+    const lh = state.lineHeight || 1.7;
+    const lines = Math.max(10, Math.floor(h / (fs * lh)));
+    // Cyrillic is wider on average
+    const charsPerLine = Math.max(22, Math.floor(w / (fs * 0.58)));
+    return Math.max(500, Math.min(3500, lines * charsPerLine));
   }
 
-  function renderTextPage(skipProgress) {
-    const el = $('#text-reader');
-    if (!el) return;
-    const continuous = state.readingMode === 'scroll-vertical' || state.readingMode === 'scroll-horizontal';
-    state.textContent = continuous ? (state.fullText || state.textPages.join('\n\n')) : (state.textPages[state.textPage] || '');
-    el.classList.toggle('reading-continuous', continuous);
-    el.innerHTML = '';
+  function splitTextIntoPages(text, pageSize) {
+    const pages = [];
+    const normalized = String(text || '').replace(/\r\n?/g, '\n');
+    // Prefer breaking on paragraph boundaries
+    const paras = normalized.split(/\n\s*\n/);
+    let buf = '';
+    for (const para of paras) {
+      const chunk = para.trim();
+      if (!chunk) continue;
+      if (!buf) {
+        buf = chunk;
+      } else if ((buf.length + 2 + chunk.length) <= pageSize) {
+        buf += '\n\n' + chunk;
+      } else {
+        if (buf.length > pageSize * 1.4) {
+          // hard-split oversized buffer
+          for (let i = 0; i < buf.length; i += pageSize) pages.push(buf.slice(i, i + pageSize));
+        } else {
+          pages.push(buf);
+        }
+        buf = chunk;
+      }
+    }
+    if (buf) {
+      if (buf.length > pageSize * 1.4) {
+        for (let i = 0; i < buf.length; i += pageSize) pages.push(buf.slice(i, i + pageSize));
+      } else pages.push(buf);
+    }
+    return pages.length ? pages : [''];
+  }
+
+  function fillParagraphs(container, text, baseParagraphIndex = 0) {
     const frag = document.createDocumentFragment();
-    const paragraphs = String(state.textContent).replace(/\r\n?/g, '\n').split(/\n\s*\n/);
-    paragraphs.forEach((raw, paragraphIndex) => {
+    const paragraphs = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/);
+    paragraphs.forEach((raw, i) => {
+      const paragraphIndex = baseParagraphIndex + i;
       const p = document.createElement('p');
       p.className = 'read-paragraph';
       p.dataset.paragraphIndex = String(paragraphIndex);
@@ -1246,12 +1404,105 @@
       p.addEventListener('click', () => startTTSFromParagraph(paragraphIndex));
       frag.appendChild(p);
     });
-    el.appendChild(frag);
+    container.appendChild(frag);
+    return paragraphs.length;
+  }
+
+  function paginateText(text, book) {
+    state.fullText = text;
+    const pageSize = estimateCharsPerPage();
+    state.textPages = splitTextIntoPages(text, pageSize);
+    state.textPage = Math.min(state.textPages.length - 1, Math.floor((book.progress || 0) * state.textPages.length) || 0);
+    state.textContent = state.textPages[state.textPage] || '';
+    $('#reader-content').innerHTML = '<div class="text-reader" id="text-reader" aria-label="Текст книги"></div>';
+    renderTextPage(true);
+  }
+
+  function renderTextPage(skipProgress) {
+    const el = $('#text-reader');
+    if (!el) return;
+    const mode = state.readingMode;
+    const isContinuous = mode === 'scroll-vertical';
+    const isHorizontal = mode === 'scroll-horizontal';
+    const isPaged = mode === 'paged' || mode === 'two-page';
+
+    // Re-paginate when switching into paged/horizontal so page size matches viewport
+    if ((isPaged || isHorizontal) && state.fullText) {
+      const pageSize = estimateCharsPerPage();
+      const rebuilt = splitTextIntoPages(state.fullText, pageSize);
+      if (rebuilt.length !== state.textPages.length) {
+        const ratio = state.textPages.length ? (state.textPage / state.textPages.length) : 0;
+        state.textPages = rebuilt;
+        state.textPage = Math.min(state.textPages.length - 1, Math.floor(ratio * state.textPages.length) || 0);
+      }
+    }
+
+    el.className = 'text-reader';
+    el.classList.toggle('reading-continuous', isContinuous);
+    el.classList.toggle('reading-paged', isPaged);
+    el.classList.toggle('reading-horizontal', isHorizontal);
+    el.classList.toggle('reading-two-page', mode === 'two-page' && window.innerWidth >= 900);
+    el.innerHTML = '';
+
+    if (isContinuous) {
+      // Full continuous vertical scroll — works reliably on iOS
+      state.textContent = state.fullText || state.textPages.join('\n\n');
+      fillParagraphs(el, state.textContent, 0);
+      $('#page-num').textContent = '∞';
+      $('#page-count').textContent = '∞';
+    } else if (isHorizontal) {
+      // Horizontal page strips with scroll-snap (no CSS multi-column — broken on iOS Safari)
+      const track = document.createElement('div');
+      track.className = 'text-h-track';
+      state.textPages.forEach((pageText, idx) => {
+        const page = document.createElement('div');
+        page.className = 'text-h-page';
+        page.dataset.pageIndex = String(idx);
+        fillParagraphs(page, pageText, 0);
+        track.appendChild(page);
+      });
+      el.appendChild(track);
+      state.textContent = state.textPages[state.textPage] || '';
+      // Snap to current page after layout
+      requestAnimationFrame(() => {
+        const pageEl = track.children[state.textPage];
+        if (pageEl) pageEl.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'auto' });
+      });
+      // Sync page number on horizontal scroll
+      track.onscroll = () => {
+        const w = track.clientWidth || 1;
+        const idx = Math.round(track.scrollLeft / w);
+        if (idx !== state.textPage && idx >= 0 && idx < state.textPages.length) {
+          state.textPage = idx;
+          state.textContent = state.textPages[idx] || '';
+          $('#page-num').textContent = idx + 1;
+          if (state.currentBook) {
+            state.currentBook.progress = (idx + 1) / state.textPages.length;
+            setProgress(state.currentBook.key || state.currentBook.path, state.currentBook.progress);
+          }
+          updateProgressBar();
+        }
+      };
+      $('#page-num').textContent = state.textPage + 1;
+      $('#page-count').textContent = state.textPages.length;
+    } else {
+      // Classic paged: one screen of text, flip with buttons / swipe
+      state.textContent = state.textPages[state.textPage] || '';
+      fillParagraphs(el, state.textContent, 0);
+      $('#page-num').textContent = state.textPage + 1;
+      $('#page-count').textContent = state.textPages.length;
+    }
+
     applyReaderStyles();
-    $('#page-num').textContent = continuous ? '∞' : state.textPage + 1;
-    $('#page-count').textContent = continuous ? '∞' : state.textPages.length;
-    if (!skipProgress) {
-      const prog = continuous ? ((el.scrollTop || 0) / Math.max(1, el.scrollHeight - el.clientHeight)) : ((state.textPage + 1) / state.textPages.length);
+
+    if (!skipProgress && state.currentBook) {
+      let prog = 0;
+      if (isContinuous) {
+        const rc = $('#reader-content');
+        prog = (rc?.scrollTop || 0) / Math.max(1, (rc?.scrollHeight || 1) - (rc?.clientHeight || 1));
+      } else {
+        prog = (state.textPage + 1) / Math.max(1, state.textPages.length);
+      }
       state.currentBook.progress = Math.min(1, Math.max(0, prog));
       setProgress(state.currentBook.key || state.currentBook.path, state.currentBook.progress);
     }
@@ -1259,8 +1510,45 @@
   }
 
   // ===== Navigation =====
+  function goTextPage(delta) {
+    if (!['txt', 'html', 'htm', 'fb2'].includes(state.currentType)) return false;
+    const mode = state.readingMode;
+    if (mode === 'scroll-vertical') {
+      const rc = $('#reader-content');
+      if (!rc) return false;
+      const step = Math.max(120, Math.floor(rc.clientHeight * 0.88));
+      rc.scrollBy({ top: delta * step, behavior: 'smooth' });
+      return true;
+    }
+    if (mode === 'scroll-horizontal') {
+      const track = document.querySelector('.text-h-track');
+      if (track) {
+        const w = track.clientWidth || 1;
+        track.scrollBy({ left: delta * w, behavior: 'smooth' });
+        return true;
+      }
+    }
+    // paged / two-page
+    const next = state.textPage + delta;
+    if (next < 0 || next >= state.textPages.length) return false;
+    state.textPage = next;
+    renderTextPage();
+    const el = $('#text-reader');
+    if (el) el.scrollTop = 0;
+    const rc = $('#reader-content');
+    if (rc) rc.scrollTop = 0;
+    return true;
+  }
+
   function goPrev() {
-    if (state.currentType === 'pdf' && state.pdfPage > 1) renderPDFPage(state.pdfPage - 1);
+    if (state.currentType === 'pdf' && state.pdfPage > 1) {
+      if (isPdfContinuous()) {
+        state.pdfPage--;
+        const el = document.querySelector(`#pdf-viewer [data-page-num="${state.pdfPage}"]`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+        $('#page-num').textContent = state.pdfPage;
+      } else renderPDFPage(state.pdfPage - 1);
+    }
     else if (state.currentType === 'epub' && state.epubRendition) state.epubRendition.prev();
     else if ((state.currentType === 'djvu' || state.currentType === 'djv') && djvuViewerInstance) {
       try {
@@ -1269,13 +1557,17 @@
         else if (djvuViewerInstance.goToPreviousPage) djvuViewerInstance.goToPreviousPage();
       } catch (e) { console.warn(e); }
     }
-    else if (['txt', 'html', 'htm', 'fb2'].includes(state.currentType) && state.textPage > 0) {
-      state.textPage--;
-      renderTextPage();
-    }
+    else goTextPage(-1);
   }
   function goNext() {
-    if (state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) renderPDFPage(state.pdfPage + 1);
+    if (state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) {
+      if (isPdfContinuous()) {
+        state.pdfPage++;
+        const el = document.querySelector(`#pdf-viewer [data-page-num="${state.pdfPage}"]`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+        $('#page-num').textContent = state.pdfPage;
+      } else renderPDFPage(state.pdfPage + 1);
+    }
     else if (state.currentType === 'epub' && state.epubRendition) state.epubRendition.next();
     else if ((state.currentType === 'djvu' || state.currentType === 'djv') && djvuViewerInstance) {
       try {
@@ -1285,10 +1577,7 @@
         else if (djvuViewerInstance.goToNextPage) djvuViewerInstance.goToNextPage();
       } catch (e) { console.warn(e); }
     }
-    else if (['txt', 'html', 'htm', 'fb2'].includes(state.currentType) && state.textPage < state.textPages.length - 1) {
-      state.textPage++;
-      renderTextPage();
-    }
+    else goTextPage(1);
   }
 
   $('#prev-page').addEventListener('click', goPrev);
@@ -1325,10 +1614,12 @@
     }
   });
 
-  // Swipe
+  // Swipe (skip in horizontal mode — native scroll-snap handles paging)
   let touchX = 0;
   $('#reader-content').addEventListener('touchstart', e => { touchX = e.changedTouches[0].screenX; }, { passive: true });
   $('#reader-content').addEventListener('touchend', e => {
+    if (state.readingMode === 'scroll-horizontal') return;
+    if (e.target.closest('.text-h-track')) return;
     const dx = e.changedTouches[0].screenX - touchX;
     if (Math.abs(dx) > 55) (dx < 0 ? goNext : goPrev)();
   }, { passive: true });
@@ -2035,5 +2326,5 @@
   applyReaderStyles();
   applyChromeState();
 
-  console.log('Умный Читатель v6.1 готов 📚✨');
+  console.log('Умный Читатель v6.3 готов 📚✨');
 })();
