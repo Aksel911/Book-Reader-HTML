@@ -337,9 +337,6 @@ body::before {
   outline: none;
   cursor: pointer;
 }
-.sort-select::before{
-  color:black;
-}
 
 /* Books grid */
 .books-grid {
