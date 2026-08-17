@@ -45,6 +45,18 @@
         <p class="eyebrow">PRIVATE · OFFLINE · YOUR BOOKS</p>
         <h2>Ваша личная библиотека</h2>
         <p class="welcome-copy">Открывайте книги прямо с устройства. PDF, EPUB, FB2, DJVU, TXT, HTML и архивы — без загрузки файлов на сервер.</p>
+
+        <!-- История / продолжить — показывается если есть сохранённые данные -->
+        <div id="continue-session" class="continue-session hidden">
+          <div class="continue-header">
+            <span class="continue-badge">История</span>
+            <button type="button" id="clear-history-btn" class="continue-clear" title="Очистить историю">Очистить</button>
+          </div>
+          <div id="continue-summary" class="continue-summary"></div>
+          <div id="continue-recent-list" class="continue-recent-list"></div>
+          <p class="continue-hint">Браузер не даёт открыть файлы без вашего разрешения. Выберите <strong>ту же папку или те же файлы</strong> — прогресс, закладки и избранное подтянутся автоматически.</p>
+        </div>
+
         <div class="picker-grid">
           <label class="select-folder-btn primary-picker">
             <input type="file" id="folder-input" webkitdirectory directory multiple

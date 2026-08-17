@@ -274,6 +274,15 @@
     const d = loadJSON('bookProgress');
     d[path] = p;
     saveJSON('bookProgress', d);
+    // Keep reading-history progress in sync for the continue panel
+    try {
+      const hist = loadJSON('readingHistory', []);
+      const i = hist.findIndex(x => x.key === path);
+      if (i >= 0) {
+        hist[i].progress = p;
+        saveJSON('readingHistory', hist);
+      }
+    } catch (e) {}
   }
 
   function getBookmarks(path) {
@@ -512,9 +521,146 @@
     state.archiveStack = [];
     state.folderStack = [];
     state.currentViewBooks = null;
+    // Remember catalog (metadata only — File handles cannot survive reload)
+    saveLibraryCatalog(books, sourceLabel);
     hideLoading();
     renderLibrary();
     toast(`Найдено: ${books.length} поддерживаемых файлов`);
+  }
+
+  // ===== Session history (survives page reload; files must be re-selected) =====
+  function saveLibraryCatalog(books, sourceLabel) {
+    const catalog = {
+      savedAt: Date.now(),
+      sourceLabel: sourceLabel || 'файлов',
+      count: books.length,
+      books: books.slice(0, 500).map(b => ({
+        key: b.key || b.path,
+        name: b.name,
+        path: b.path,
+        type: b.type,
+        size: b.size || 0,
+        isArchive: !!b.isArchive
+      }))
+    };
+    saveJSON('libraryCatalog', catalog);
+  }
+
+  function getLibraryCatalog() {
+    return loadJSON('libraryCatalog', null);
+  }
+
+  function pushReadingHistory(book) {
+    if (!book) return;
+    const key = book.key || book.path;
+    const list = loadJSON('readingHistory', []);
+    const entry = {
+      key,
+      name: book.name,
+      path: book.path,
+      type: book.type,
+      progress: typeof book.progress === 'number' ? book.progress : (getProgress(key) || 0),
+      openedAt: Date.now()
+    };
+    const filtered = list.filter(x => x.key !== key);
+    filtered.unshift(entry);
+    saveJSON('readingHistory', filtered.slice(0, 40));
+  }
+
+  function getReadingHistory() {
+    return loadJSON('readingHistory', []);
+  }
+
+  function clearSessionHistory() {
+    try {
+      localStorage.removeItem('libraryCatalog');
+      localStorage.removeItem('readingHistory');
+      // keep progress/favorites/bookmarks — only clear "session hint"
+    } catch (e) {}
+    renderContinueSession();
+    toast('История сессий очищена (прогресс книг сохранён)');
+  }
+
+  function formatRelativeTime(ts) {
+    if (!ts) return '';
+    const diff = Date.now() - ts;
+    const m = Math.floor(diff / 60000);
+    if (m < 1) return 'только что';
+    if (m < 60) return m + ' мин назад';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + ' ч назад';
+    const d = Math.floor(h / 24);
+    if (d < 14) return d + ' дн. назад';
+    return new Date(ts).toLocaleDateString('ru');
+  }
+
+  function renderContinueSession() {
+    const box = $('#continue-session');
+    if (!box) return;
+    const catalog = getLibraryCatalog();
+    const history = getReadingHistory();
+    const recents = loadJSON('recentBooks', {});
+    const recentKeys = Object.keys(recents).sort((a, b) => (recents[b] || 0) - (recents[a] || 0));
+
+    if (!catalog && !history.length && !recentKeys.length) {
+      box.classList.add('hidden');
+      return;
+    }
+    box.classList.remove('hidden');
+
+    const summary = $('#continue-summary');
+    if (summary) {
+      if (catalog && catalog.count) {
+        const when = formatRelativeTime(catalog.savedAt);
+        summary.innerHTML = `
+          <div class="continue-stat">
+            <strong>${catalog.count}</strong>
+            <span>книг в прошлой сессии</span>
+          </div>
+          <div class="continue-meta">Обновлено ${when || 'ранее'} · ${escapeHtml(catalog.sourceLabel || 'файлы')}</div>`;
+      } else {
+        summary.innerHTML = `<div class="continue-meta">Есть сохранённый прогресс чтения. Откройте папку или файлы, чтобы продолжить.</div>`;
+      }
+    }
+
+    const listEl = $('#continue-recent-list');
+    if (listEl) {
+      listEl.innerHTML = '';
+      // Prefer explicit reading history; fall back to recentBooks keys + catalog names
+      let items = history.slice(0, 8);
+      if (!items.length && catalog && catalog.books) {
+        items = recentKeys.slice(0, 8).map(key => {
+          const meta = catalog.books.find(b => b.key === key || b.path === key) || { key, name: key.split('/').pop(), path: key, type: '' };
+          return {
+            key,
+            name: meta.name || key,
+            path: meta.path || key,
+            type: meta.type || '',
+            progress: getProgress(key) || 0,
+            openedAt: recents[key]
+          };
+        });
+      }
+      if (!items.length) {
+        listEl.innerHTML = '<div class="continue-empty">Пока нет открытых книг — после чтения они появятся здесь</div>';
+      } else {
+        items.forEach(item => {
+          const pct = Math.round((item.progress || getProgress(item.key) || 0) * 100);
+          const row = document.createElement('div');
+          row.className = 'continue-row';
+          row.innerHTML = `
+            <div class="continue-row-main">
+              <span class="continue-row-name">${escapeHtml(item.name || 'Книга')}</span>
+              <span class="continue-row-meta">${escapeHtml((item.type || '').toUpperCase())}${item.openedAt ? ' · ' + formatRelativeTime(item.openedAt) : ''}</span>
+            </div>
+            <div class="continue-row-prog">
+              <div class="continue-row-bar"><i style="width:${Math.min(100, pct)}%"></i></div>
+              <span>${pct}%</span>
+            </div>`;
+          listEl.appendChild(row);
+        });
+      }
+    }
   }
 
   $('#folder-input').addEventListener('change', e => {
@@ -881,6 +1027,7 @@
     recents[book.key || book.path] = Date.now();
     saveJSON('recentBooks', recents);
     book.lastOpened = Date.now();
+    pushReadingHistory(book);
     incStat('booksOpened');
     state.readingStart = Date.now();
 
@@ -2502,5 +2649,26 @@
   applyChromeState();
   scheduleEngineWarmup();
 
-  console.log('Умный Читатель v6.5 готов 📚✨');
+  // Restore session hint / reading history on welcome screen
+  renderContinueSession();
+  const clearHistBtn = $('#clear-history-btn');
+  if (clearHistBtn) clearHistBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    clearSessionHistory();
+  });
+
+  // Keep history progress fresh when leaving reader
+  const _origBack = $('#back-to-library');
+  if (_origBack) {
+    _origBack.addEventListener('click', () => {
+      if (state.currentBook) {
+        const key = state.currentBook.key || state.currentBook.path;
+        state.currentBook.progress = getProgress(key) || state.currentBook.progress || 0;
+        pushReadingHistory(state.currentBook);
+      }
+    }, true);
+  }
+
+  console.log('Умный Читатель v6.6 готов 📚✨');
 })();
