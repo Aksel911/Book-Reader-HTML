@@ -29,6 +29,9 @@
     lineHeight: parseFloat(localStorage.getItem('lineHeight') || '1.7'),
     fontFamily: localStorage.getItem('fontFamily') || 'system-ui',
     readingMode: localStorage.getItem('readingMode') || 'scroll-vertical',
+    progressCollapsed: localStorage.getItem('progressCollapsed') === 'true',
+    ttsCollapsed: localStorage.getItem('ttsCollapsed') === 'true',
+    chromeCollapsed: localStorage.getItem('chromeCollapsed') === 'true',
     ttsRate: parseFloat(localStorage.getItem('ttsRate') || '1'),
     ttsPitch: parseFloat(localStorage.getItem('ttsPitch') || '1'),
     ttsPause: parseInt(localStorage.getItem('ttsPause') || '220', 10),
@@ -258,37 +261,128 @@
     $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b.dataset.readingMode === state.readingMode));
   }
 
+  function applyChromeState() {
+    const progressWrap = $('#reading-progress-wrap');
+    const bottom = $('#reader-bottom-chrome');
+    const pill = $('#show-chrome-pill');
+    const ttsBtn = $('#toggle-tts-btn');
+    const progBtn = $('#toggle-progress-btn');
+    const chromeBtn = $('#toggle-chrome-btn');
+
+    if (progressWrap) {
+      progressWrap.classList.toggle('collapsed', state.progressCollapsed || state.chromeCollapsed);
+    }
+    if (bottom) {
+      bottom.classList.toggle('collapsed', state.chromeCollapsed);
+      bottom.classList.toggle('tts-collapsed', state.ttsCollapsed && !state.chromeCollapsed);
+    }
+    if (pill) {
+      pill.classList.toggle('hidden', !state.chromeCollapsed);
+    }
+    if (ttsBtn) {
+      ttsBtn.textContent = state.ttsCollapsed ? '▴' : '▾';
+      ttsBtn.title = state.ttsCollapsed ? 'Развернуть панель озвучки' : 'Свернуть панель озвучки';
+    }
+    if (progBtn) {
+      progBtn.textContent = state.progressCollapsed ? '▾' : '▴';
+      progBtn.title = state.progressCollapsed ? 'Развернуть прогресс' : 'Свернуть прогресс';
+    }
+    if (chromeBtn) {
+      chromeBtn.textContent = state.chromeCollapsed ? '▢' : '▣';
+      chromeBtn.title = state.chromeCollapsed ? 'Показать панели' : 'Скрыть панели';
+    }
+  }
+
+  function setProgressCollapsed(v) {
+    state.progressCollapsed = !!v;
+    localStorage.setItem('progressCollapsed', state.progressCollapsed);
+    applyChromeState();
+  }
+  function setTtsCollapsed(v) {
+    state.ttsCollapsed = !!v;
+    localStorage.setItem('ttsCollapsed', state.ttsCollapsed);
+    applyChromeState();
+  }
+  function setChromeCollapsed(v) {
+    state.chromeCollapsed = !!v;
+    localStorage.setItem('chromeCollapsed', state.chromeCollapsed);
+    // When showing all chrome, also expand progress/tts if user wants full UI
+    if (!v) {
+      // keep individual preferences; only uncollapse the whole chrome
+    }
+    applyChromeState();
+  }
+
   async function setReadingMode(mode, rerender = true) {
     const allowed = new Set(['scroll-vertical','paged','scroll-horizontal','two-page']);
     if (!allowed.has(mode)) mode = 'scroll-vertical';
+    const prev = state.readingMode;
     state.readingMode = mode;
     localStorage.setItem('readingMode', mode);
     applyReaderStyles();
-    if (rerender && state.currentType && ['txt','html','htm','fb2'].includes(state.currentType)) {
-      renderTextPage(true);
-    } else if (state.currentType === 'epub' && state.epubRendition) {
-      const book = state.currentBook;
-      const loc = state.epubRendition.currentLocation()?.start?.cfi || localStorage.getItem('epubLoc:' + (book?.key || book?.path));
-      try {
-        state.epubRendition.destroy();
-      } catch (e) {}
-      if (book) {
+    // Visual feedback immediately (important on iOS where repaint can lag)
+    $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b.dataset.readingMode === mode));
+
+    if (!rerender || !state.currentType) return;
+
+    try {
+      if (['txt','html','htm','fb2'].includes(state.currentType)) {
+        renderTextPage(true);
+        // Force layout reflow for CSS columns / overflow on iOS Safari
+        const el = $('#text-reader');
+        const rc = $('#reader-content');
+        if (el && rc) {
+          void el.offsetHeight;
+          if (mode === 'scroll-horizontal') {
+            rc.scrollLeft = 0;
+            el.scrollLeft = 0;
+          } else {
+            rc.scrollTop = 0;
+          }
+        }
+      } else if (state.currentType === 'epub' && state.epubBook) {
+        const book = state.currentBook;
+        let loc = null;
+        try {
+          loc = state.epubRendition?.currentLocation()?.start?.cfi || localStorage.getItem('epubLoc:' + (book?.key || book?.path));
+        } catch (e) {}
+        try { state.epubRendition?.destroy(); } catch (e) {}
+        state.epubRendition = null;
         const area = $('#epub-area');
         if (area) area.innerHTML = '';
         const flow = state.readingMode === 'scroll-vertical' ? 'scrolled-continuous' : 'paginated';
-        state.epubRendition = state.epubBook.renderTo(area, { width:'100%', height:'100%', flow, manager: state.readingMode === 'scroll-vertical' ? 'continuous' : 'default', spread: state.readingMode === 'two-page' ? 'always' : 'auto' });
+        state.epubRendition = state.epubBook.renderTo(area || $('#reader-content'), {
+          width: '100%',
+          height: '100%',
+          flow,
+          manager: state.readingMode === 'scroll-vertical' ? 'continuous' : 'default',
+          spread: state.readingMode === 'two-page' ? 'always' : 'auto'
+        });
         try { await state.epubRendition.display(loc || undefined); } catch (e) { console.warn('EPUB mode switch', e); }
         state.epubRendition.on('relocated', (loc2) => {
           try {
             const percent = loc2.start.percentage || 0;
-            state.currentBook.progress = percent;
-            setProgress(book.key || book.path, percent);
-            localStorage.setItem('epubLoc:' + (book.key || book.path), loc2.start.cfi);
+            if (state.currentBook) {
+              state.currentBook.progress = percent;
+              setProgress(book.key || book.path, percent);
+              localStorage.setItem('epubLoc:' + (book.key || book.path), loc2.start.cfi);
+            }
             $('#page-num').textContent = Math.round(percent * 100) + '%';
             $('#page-count').textContent = '100%';
             updateProgressBar();
           } catch (e) {}
         });
+      } else if (state.currentType === 'pdf' && state.pdfDoc) {
+        // Re-render current page so layout/overflow from data-reading-mode applies cleanly
+        await renderPDFPage(state.pdfPage);
+      }
+    } catch (e) {
+      console.warn('setReadingMode failed', e);
+      // Restore previous mode on hard failure
+      if (prev && prev !== mode) {
+        state.readingMode = prev;
+        localStorage.setItem('readingMode', prev);
+        applyReaderStyles();
       }
     }
   }
@@ -910,21 +1004,41 @@
     state.pdfPage = num;
     $('#page-num').textContent = num;
     const page = await state.pdfDoc.getPage(num);
-    const scale = Math.min(2.2, (window.innerWidth - 16) / page.getViewport({ scale: 1 }).width);
-    const vp = page.getViewport({ scale });
+
+    // High-DPI (Retina) rendering for sharp text/images on iPhone
+    const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+    const container = $('#reader-content');
+    const containerWidth = Math.max(280, (container?.clientWidth || window.innerWidth) - 20);
+    const baseVp = page.getViewport({ scale: 1 });
+    // Cap CSS scale so very wide pages still fit; prefer sharper on phone
+    const cssScale = Math.min(3.0, containerWidth / Math.max(1, baseVp.width));
+    const viewport = page.getViewport({ scale: cssScale }); // CSS-pixel viewport for layout & text layer
+
     const viewer = $('#pdf-viewer');
     viewer.innerHTML = '';
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.height = vp.height;
-    canvas.width = vp.width;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    // Internal buffer at device pixels for Retina sharpness
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.width = Math.floor(viewport.width) + 'px';
+    canvas.style.height = Math.floor(viewport.height) + 'px';
+    canvas.style.imageRendering = '-webkit-optimize-contrast';
+
     const pageWrap = document.createElement('div');
     pageWrap.className = 'pdf-page-wrap';
-    pageWrap.style.width = vp.width + 'px';
-    pageWrap.style.height = vp.height + 'px';
+    pageWrap.style.width = Math.floor(viewport.width) + 'px';
+    pageWrap.style.height = Math.floor(viewport.height) + 'px';
     pageWrap.appendChild(canvas);
     viewer.appendChild(pageWrap);
-    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+    // Scale drawing context so PDF.js paints into the high-res buffer
+    if (dpr !== 1) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    await page.render({
+      canvasContext: ctx,
+      viewport,
+      intent: 'display'
+    }).promise;
 
     const tc = await page.getTextContent();
     const textLayer = document.createElement('div');
@@ -933,7 +1047,11 @@
     pageWrap.appendChild(textLayer);
     try {
       if (pdfjsLib.renderTextLayer) {
-        const task = pdfjsLib.renderTextLayer({ textContentSource: tc, container: textLayer, viewport });
+        const task = pdfjsLib.renderTextLayer({
+          textContentSource: tc,
+          container: textLayer,
+          viewport // match CSS size of canvas
+        });
         if (task?.promise) await task.promise;
       }
     } catch (e) { console.debug('PDF text layer unavailable', e); }
@@ -1175,6 +1293,37 @@
 
   $('#prev-page').addEventListener('click', goPrev);
   $('#next-page').addEventListener('click', goNext);
+
+  // Collapsible progress / TTS / full chrome
+  $('#toggle-progress-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setProgressCollapsed(!state.progressCollapsed);
+  });
+  $('#toggle-tts-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setTtsCollapsed(!state.ttsCollapsed);
+  });
+  $('#toggle-chrome-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setChromeCollapsed(!state.chromeCollapsed);
+  });
+  $('#show-chrome-pill')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setChromeCollapsed(false);
+  });
+  // Tap empty area of content to toggle chrome (reader-friendly on iPhone)
+  let lastChromeTap = 0;
+  $('#reader-content')?.addEventListener('click', (e) => {
+    // Ignore interactive elements inside content
+    if (e.target.closest('a, button, input, select, textarea, .read-paragraph, .ctrl-btn')) return;
+    const now = Date.now();
+    if (now - lastChromeTap < 350) {
+      setChromeCollapsed(!state.chromeCollapsed);
+      lastChromeTap = 0;
+    } else {
+      lastChromeTap = now;
+    }
+  });
 
   // Swipe
   let touchX = 0;
@@ -1770,7 +1919,21 @@
   });
 
   $$('.reading-mode-opt').forEach(btn => {
-    btn.addEventListener('click', () => setReadingMode(btn.dataset.readingMode));
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const mode = btn.dataset.readingMode;
+      if (!mode) return;
+      // Immediate UI feedback (iOS Safari sometimes delays class updates)
+      $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b === btn));
+      await setReadingMode(mode);
+      toast('Вид: ' + (btn.querySelector('strong')?.textContent || mode), 1400);
+      // On narrow screens close settings so user sees the change right away
+      if (window.innerWidth <= 700) {
+        const overlay = $('#modal-overlay');
+        if (overlay) overlay.classList.add('hidden');
+      }
+    });
   });
 
   $('#tts-continuous').addEventListener('change', e => { state.continuousTTS = e.target.checked; });
@@ -1870,6 +2033,7 @@
   $('#tts-rate').value = state.ttsRate;
   $('#tts-rate-label').textContent = state.ttsRate.toFixed(1) + '×';
   applyReaderStyles();
+  applyChromeState();
 
-  console.log('Умный Читатель v2 готов 📚✨');
+  console.log('Умный Читатель v6.1 готов 📚✨');
 })();

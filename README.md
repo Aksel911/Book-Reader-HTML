@@ -231,3 +231,9 @@ python3 -m http.server 8080
 - Voice changes preserve the current speech character position instead of restarting.
 - Pause/resume preserves the current sentence and character offset.
 - Desktop library rendering is lighter: fewer initial DOM cards, idle-scheduled previews, one PDF preview worker, smaller thumbnails, object-URL cleanup, and reduced expensive visual effects.
+
+### v6.1 fixes (iPhone)
+- **PDF quality on Retina**: pages render at `devicePixelRatio` so text and images stay sharp (no more blurry unreadable pages).
+- Fixed broken PDF text layer (`viewport` bug) so highlighting and text extraction work again.
+- **Вид чтения**: mode switch is more reliable on iOS Safari (immediate UI feedback, forced reflow, auto-close settings on phone, PDF re-render).
+- **Сворачиваемые панели**: Progress bar, TTS bar and the whole bottom chrome can be collapsed/expanded (buttons + double-tap content + floating «Панели» pill). State is remembered.

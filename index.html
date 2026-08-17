@@ -122,6 +122,7 @@
         <button id="toc-btn" class="icon-btn" title="Оглавление">☰</button>
         <button id="bookmark-btn" class="icon-btn" title="Закладка">🔖</button>
         <button id="search-in-book-btn" class="icon-btn" title="Поиск">🔍</button>
+        <button id="toggle-chrome-btn" class="icon-btn" title="Скрыть/показать панели">▣</button>
         <button id="reader-menu-btn" class="icon-btn" title="Меню">⋮</button>
       </div>
     </header>
@@ -132,29 +133,38 @@
 
     <div id="tts-live-caption" class="tts-live-caption hidden" aria-live="polite"></div>
 
-    <!-- Progress bar under content -->
-    <div class="reading-progress-bar">
-      <div id="reading-progress-fill" class="reading-progress-fill"></div>
-    </div>
-
-    <div class="reader-controls">
-      <button id="prev-page" class="ctrl-btn" title="Назад">‹</button>
-      <div class="page-info">
-        <span id="page-num">1</span> / <span id="page-count">1</span>
+    <!-- Progress bar under content (collapsible) -->
+    <div id="reading-progress-wrap" class="reading-progress-wrap">
+      <div class="reading-progress-bar">
+        <div id="reading-progress-fill" class="reading-progress-fill"></div>
       </div>
-      <button id="next-page" class="ctrl-btn" title="Вперёд">›</button>
+      <button type="button" id="toggle-progress-btn" class="chrome-toggle-btn" title="Свернуть/развернуть прогресс" aria-label="Прогресс">▴</button>
     </div>
 
-    <!-- TTS Bar -->
-    <div id="tts-bar" class="tts-bar">
-      <button id="tts-play" class="tts-btn" title="Озвучить">▶</button>
-      <button id="tts-stop" class="tts-btn" title="Стоп">⏹</button>
-      <select id="tts-voice" class="tts-select" title="Голос"></select>
-      <input type="range" id="tts-rate" min="0.5" max="2.5" step="0.05" value="1" title="Скорость">
-      <span id="tts-rate-label">1.0×</span>
-      <button id="tts-more-btn" class="tts-btn small" title="Параметры озвучки">⚙</button>
-      <button id="tts-timer-btn" class="tts-btn small" title="Таймер сна">⏱</button>
+    <div id="reader-bottom-chrome" class="reader-bottom-chrome">
+      <div class="reader-controls">
+        <button id="prev-page" class="ctrl-btn" title="Назад">‹</button>
+        <div class="page-info">
+          <span id="page-num">1</span> / <span id="page-count">1</span>
+        </div>
+        <button id="next-page" class="ctrl-btn" title="Вперёд">›</button>
+        <button type="button" id="toggle-tts-btn" class="chrome-toggle-btn inline" title="Свернуть/развернуть панель озвучки" aria-label="Озвучка">▾</button>
+      </div>
+
+      <!-- TTS Bar (collapsible) -->
+      <div id="tts-bar" class="tts-bar">
+        <button id="tts-play" class="tts-btn" title="Озвучить">▶</button>
+        <button id="tts-stop" class="tts-btn" title="Стоп">⏹</button>
+        <select id="tts-voice" class="tts-select" title="Голос"></select>
+        <input type="range" id="tts-rate" min="0.5" max="2.5" step="0.05" value="1" title="Скорость">
+        <span id="tts-rate-label">1.0×</span>
+        <button id="tts-more-btn" class="tts-btn small" title="Параметры озвучки">⚙</button>
+        <button id="tts-timer-btn" class="tts-btn small" title="Таймер сна">⏱</button>
+      </div>
     </div>
+
+    <!-- Floating pill when chrome is fully hidden -->
+    <button type="button" id="show-chrome-pill" class="show-chrome-pill hidden" title="Показать панели">▴ Панели</button>
   </div>
 
   <!-- ===== TOC / BOOKMARKS SIDE PANEL ===== -->
