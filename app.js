@@ -2809,7 +2809,40 @@
     });
   }
 
-  // library-toolbar is not sticky — stays in document flow and scrolls away
+  // Library toolbar: stay sticky, smoothly hide on scroll down, show on scroll up
+  (function setupLibraryToolbarAutoHide() {
+    const main = document.querySelector('.library-main');
+    const bar = $('#library-toolbar');
+    if (!main || !bar) return;
+    let lastY = 0;
+    let ticking = false;
+    const THRESHOLD = 8;
+    const TOP_SHOW = 16;
+
+    const update = () => {
+      ticking = false;
+      const y = main.scrollTop;
+      const dy = y - lastY;
+      bar.classList.toggle('is-scrolled', y > TOP_SHOW);
+      if (y <= TOP_SHOW) {
+        bar.classList.remove('is-hidden');
+      } else if (dy > THRESHOLD) {
+        // scrolling down → hide
+        bar.classList.add('is-hidden');
+      } else if (dy < -THRESHOLD) {
+        // scrolling up → show
+        bar.classList.remove('is-hidden');
+      }
+      lastY = y;
+    };
+
+    main.addEventListener('scroll', () => {
+      if (!ticking) {
+        ticking = true;
+        requestAnimationFrame(update);
+      }
+    }, { passive: true });
+  })();
 
   $$('.theme-opt').forEach(btn => {
     btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
