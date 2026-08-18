@@ -425,19 +425,29 @@
 
     try {
       if (['txt','html','htm','fb2'].includes(state.currentType)) {
-        renderTextPage(true);
-        // Force layout reflow for CSS columns / overflow on iOS Safari
-        const el = $('#text-reader');
-        const rc = $('#reader-content');
-        if (el && rc) {
-          void el.offsetHeight;
-          if (mode === 'scroll-horizontal') {
-            rc.scrollLeft = 0;
-            el.scrollLeft = 0;
-          } else {
-            rc.scrollTop = 0;
+        // Re-render after layout settles (settings modal may still be closing)
+        const doRender = () => {
+          renderTextPage(true);
+          const el = $('#text-reader');
+          const rc = $('#reader-content');
+          if (el && rc) {
+            void el.offsetHeight;
+            void rc.offsetHeight;
+            if (mode === 'scroll-horizontal') {
+              rc.scrollLeft = 0;
+              const track = $('#text-h-track') || el.querySelector('.text-h-track');
+              if (track) {
+                const w = track.clientWidth || rc.clientWidth || window.innerWidth;
+                track.scrollLeft = (state.textPage || 0) * w;
+              }
+            } else if (mode !== 'scroll-vertical') {
+              rc.scrollTop = 0;
+            }
           }
-        }
+        };
+        doRender();
+        setTimeout(doRender, 50);
+        setTimeout(doRender, 200);
       } else if (state.currentType === 'epub' && state.epubBook) {
         const book = state.currentBook;
         let loc = null;
@@ -1537,13 +1547,32 @@
     viewer.className = horizontal ? 'pdf-viewer pdf-viewer-horizontal' : 'pdf-viewer pdf-viewer-continuous';
     viewer.innerHTML = '';
 
+    // Horizontal PDF: scroll the content area, not overflow:hidden from text mode CSS
+    if (container) {
+      if (horizontal) {
+        container.style.overflowX = 'auto';
+        container.style.overflowY = 'hidden';
+        container.style.webkitOverflowScrolling = 'touch';
+      } else {
+        container.style.overflowX = '';
+        container.style.overflowY = '';
+      }
+    }
+
     // Placeholders first for fast layout, then paint nearby pages
     const placeholders = [];
     for (let n = 1; n <= state.pdfTotal; n++) {
       const ph = document.createElement('div');
       ph.className = 'pdf-page-placeholder';
       ph.dataset.pageNum = String(n);
-      ph.style.minHeight = horizontal ? '70vh' : '40vh';
+      if (horizontal) {
+        ph.style.minWidth = Math.min(containerWidth, window.innerWidth - 24) + 'px';
+        ph.style.width = Math.min(containerWidth, window.innerWidth - 24) + 'px';
+        ph.style.minHeight = '70vh';
+        ph.style.flex = '0 0 auto';
+      } else {
+        ph.style.minHeight = '40vh';
+      }
       ph.innerHTML = `<span class="pdf-ph-label">${n}</span>`;
       viewer.appendChild(ph);
       placeholders.push(ph);
@@ -1835,18 +1864,23 @@
     const mode = state.readingMode;
     const isContinuous = mode === 'scroll-vertical';
     const isHorizontal = mode === 'scroll-horizontal';
-    const isTwoPage = mode === 'two-page' && window.innerWidth >= 720;
-    const isPaged = mode === 'paged' || (mode === 'two-page' && !isTwoPage);
+    // Two-page works on all widths (side-by-side ≥560px, stacked on phones via CSS)
+    const isTwoPage = mode === 'two-page';
+    const isPaged = mode === 'paged';
+    const sideBySide = isTwoPage && window.innerWidth >= 560;
 
-    // Re-paginate when switching into paged/horizontal so page size matches viewport
+    // Always re-paginate for page-based modes so viewport/font changes apply
     if ((isPaged || isHorizontal || isTwoPage) && state.fullText) {
-      const pageSize = estimateCharsPerPage(isTwoPage ? 0.48 : 1);
-      const rebuilt = splitTextIntoPages(state.fullText, pageSize);
-      if (rebuilt.length !== state.textPages.length) {
-        const ratio = state.textPages.length ? (state.textPage / state.textPages.length) : 0;
-        state.textPages = rebuilt;
-        state.textPage = Math.min(state.textPages.length - 1, Math.floor(ratio * state.textPages.length) || 0);
-      }
+      const widthFactor = sideBySide ? 0.46 : 1;
+      const pageSize = estimateCharsPerPage(widthFactor);
+      const ratio = state.textPages.length
+        ? (state.textPage / Math.max(1, state.textPages.length))
+        : (state.currentBook?.progress || 0);
+      state.textPages = splitTextIntoPages(state.fullText, pageSize);
+      // Align to even index for two-page spreads
+      let idx = Math.min(state.textPages.length - 1, Math.floor(ratio * state.textPages.length) || 0);
+      if (isTwoPage && idx % 2 === 1) idx = Math.max(0, idx - 1);
+      state.textPage = idx;
     }
 
     el.className = 'text-reader';
@@ -1856,16 +1890,28 @@
     el.classList.toggle('reading-two-page', isTwoPage);
     el.innerHTML = '';
 
+    // Ensure reader-content can host absolute children
+    const rc = $('#reader-content');
+    if (rc) {
+      if (isHorizontal || isTwoPage) {
+        rc.style.position = 'relative';
+        rc.scrollTop = 0;
+        rc.scrollLeft = 0;
+      } else {
+        rc.style.position = '';
+      }
+    }
+
     if (isContinuous) {
-      // Full continuous vertical scroll — works reliably on iOS
       state.textContent = state.fullText || state.textPages.join('\n\n');
       fillParagraphs(el, state.textContent, 0);
       $('#page-num').textContent = '∞';
       $('#page-count').textContent = '∞';
     } else if (isHorizontal) {
-      // Horizontal page strips with scroll-snap (no CSS multi-column — broken on iOS Safari)
       const track = document.createElement('div');
       track.className = 'text-h-track';
+      track.setAttribute('id', 'text-h-track');
+      // Build pages — use measured width after mount
       state.textPages.forEach((pageText, idx) => {
         const page = document.createElement('div');
         page.className = 'text-h-page';
@@ -1875,13 +1921,8 @@
       });
       el.appendChild(track);
       state.textContent = state.textPages[state.textPage] || '';
-      // Snap to current page after layout
-      requestAnimationFrame(() => {
-        const pageEl = track.children[state.textPage];
-        if (pageEl) pageEl.scrollIntoView({ inline: 'start', block: 'nearest', behavior: 'auto' });
-      });
-      // Sync page number on horizontal scroll
-      track.onscroll = () => {
+
+      const syncFromScroll = () => {
         const w = track.clientWidth || 1;
         const idx = Math.round(track.scrollLeft / w);
         if (idx !== state.textPage && idx >= 0 && idx < state.textPages.length) {
@@ -1889,22 +1930,40 @@
           state.textContent = state.textPages[idx] || '';
           $('#page-num').textContent = idx + 1;
           if (state.currentBook) {
-            state.currentBook.progress = (idx + 1) / state.textPages.length;
+            state.currentBook.progress = (idx + 1) / Math.max(1, state.textPages.length);
             setProgress(state.currentBook.key || state.currentBook.path, state.currentBook.progress);
           }
           updateProgressBar();
         }
       };
-      $('#page-num').textContent = state.textPage + 1;
+      track.onscroll = syncFromScroll;
+
+      // Force layout then snap to current page (double rAF for iOS Safari)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const w = track.clientWidth || el.clientWidth || window.innerWidth;
+          // Explicit pixel widths help iOS scroll-snap
+          [...track.children].forEach(page => {
+            page.style.flex = `0 0 ${w}px`;
+            page.style.width = w + 'px';
+            page.style.minWidth = w + 'px';
+          });
+          track.scrollLeft = (state.textPage || 0) * w;
+          $('#page-num').textContent = (state.textPage || 0) + 1;
+          $('#page-count').textContent = state.textPages.length;
+        });
+      });
+      $('#page-num').textContent = (state.textPage || 0) + 1;
       $('#page-count').textContent = state.textPages.length;
     } else if (isTwoPage) {
-      // True two-page spread (side-by-side), no CSS columns — works on desktop & iPad
       const spread = document.createElement('div');
       spread.className = 'text-two-page-spread';
       const left = document.createElement('div');
       left.className = 'text-two-page-col';
       const right = document.createElement('div');
       right.className = 'text-two-page-col';
+      // Keep even page as left
+      if (state.textPage % 2 === 1) state.textPage = Math.max(0, state.textPage - 1);
       const leftIdx = state.textPage;
       const rightIdx = Math.min(state.textPages.length - 1, leftIdx + 1);
       fillParagraphs(left, state.textPages[leftIdx] || '', 0);
@@ -1917,7 +1976,6 @@
       $('#page-num').textContent = (leftIdx + 1) + (rightIdx > leftIdx ? '–' + (rightIdx + 1) : '');
       $('#page-count').textContent = state.textPages.length;
     } else {
-      // Classic paged: one screen of text, flip with buttons / swipe
       state.textContent = state.textPages[state.textPage] || '';
       fillParagraphs(el, state.textContent, 0);
       $('#page-num').textContent = state.textPage + 1;
@@ -1929,8 +1987,8 @@
     if (!skipProgress && state.currentBook) {
       let prog = 0;
       if (isContinuous) {
-        const rc = $('#reader-content');
-        prog = (rc?.scrollTop || 0) / Math.max(1, (rc?.scrollHeight || 1) - (rc?.clientHeight || 1));
+        const box = $('#reader-content');
+        prog = (box?.scrollTop || 0) / Math.max(1, (box?.scrollHeight || 1) - (box?.clientHeight || 1));
       } else {
         prog = (state.textPage + 1) / Math.max(1, state.textPages.length);
       }
@@ -1952,24 +2010,42 @@
       return true;
     }
     if (mode === 'scroll-horizontal') {
-      const track = document.querySelector('.text-h-track');
+      const track = document.querySelector('#text-h-track') || document.querySelector('.text-h-track');
       if (track) {
-        const w = track.clientWidth || 1;
-        track.scrollBy({ left: delta * w, behavior: 'smooth' });
+        const w = track.clientWidth || window.innerWidth;
+        const next = Math.max(0, Math.min(state.textPages.length - 1, (state.textPage || 0) + delta));
+        state.textPage = next;
+        track.scrollTo({ left: next * w, behavior: 'smooth' });
+        state.textContent = state.textPages[next] || '';
+        $('#page-num').textContent = next + 1;
+        $('#page-count').textContent = state.textPages.length;
+        if (state.currentBook) {
+          state.currentBook.progress = (next + 1) / Math.max(1, state.textPages.length);
+          setProgress(state.currentBook.key || state.currentBook.path, state.currentBook.progress);
+        }
+        updateProgressBar();
         return true;
       }
+      // Fallback if track missing
+      const next = state.textPage + delta;
+      if (next < 0 || next >= state.textPages.length) return false;
+      state.textPage = next;
+      renderTextPage();
+      return true;
     }
-    // paged / two-page: two-page advances by 2 pages
-    const step = (mode === 'two-page' && window.innerWidth >= 720) ? 2 : 1;
-    const next = state.textPage + delta * step;
-    if (next < 0 || next >= state.textPages.length) {
-      if (delta < 0 && state.textPage > 0) {
+    // paged / two-page: two-page always advances by 2
+    const step = mode === 'two-page' ? 2 : 1;
+    let next = state.textPage + delta * step;
+    if (mode === 'two-page' && next % 2 === 1) next -= 1;
+    if (next < 0) {
+      if (state.textPage > 0) {
         state.textPage = 0;
         renderTextPage();
         return true;
       }
       return false;
     }
+    if (next >= state.textPages.length) return false;
     state.textPage = next;
     renderTextPage();
     const el = $('#text-reader');
@@ -2733,14 +2809,7 @@
     });
   }
 
-  // Sticky toolbar visual polish when scrolled
-  const libMain = document.querySelector('.library-main');
-  const libToolbar = $('#library-toolbar');
-  if (libMain && libToolbar) {
-    libMain.addEventListener('scroll', () => {
-      libToolbar.classList.toggle('is-stuck', libMain.scrollTop > 24);
-    }, { passive: true });
-  }
+  // library-toolbar is not sticky — stays in document flow and scrolls away
 
   $$('.theme-opt').forEach(btn => {
     btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
@@ -2882,6 +2951,18 @@
   applyChromeState();
   scheduleEngineWarmup();
 
+  // Re-layout page modes on rotate / resize
+  let _resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+      if (!$('#reader-screen')?.classList.contains('active')) return;
+      if (!['txt', 'html', 'htm', 'fb2'].includes(state.currentType)) return;
+      if (!['scroll-horizontal', 'two-page', 'paged'].includes(state.readingMode)) return;
+      renderTextPage(true);
+    }, 180);
+  });
+
   // Restore session hint / reading history on welcome screen
   renderContinueSession();
   const clearHistBtn = $('#clear-history-btn');
@@ -2903,5 +2984,5 @@
     }, true);
   }
 
-  console.log('Умный Читатель v6.7 готов 📚✨');
+  console.log('Умный Читатель v6.9 готов 📚✨');
 })();

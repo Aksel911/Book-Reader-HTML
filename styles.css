@@ -1318,21 +1318,17 @@ body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:
 .library-hero p:not(.eyebrow) { font-size:.94rem; max-width:560px; }
 .hero-stat { min-width:110px; padding:14px 16px; border-radius:18px; background:linear-gradient(135deg,rgba(255,255,255,.06),rgba(255,255,255,.018)); box-shadow:0 10px 40px rgba(0,0,0,.18); }
 .hero-stat strong { font-size:1.6rem; }
-/* Compact sticky toolbar — less height, glass, no awkward sticky block */
+/* Toolbar at top of library content — scrolls away with the page (not sticky) */
 .library-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  position: static;
   margin: 0 0 12px;
-  padding: 8px 0 10px;
+  padding: 4px 0 8px;
   gap: 8px;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
-}
-.library-toolbar.is-stuck {
-  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  background: transparent;
+  border-bottom: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .toolbar-compact {
   display: flex;
@@ -1672,18 +1668,22 @@ body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:
 }
 .settings-note-inline { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 
-/* Reading modes — iOS-safe (no CSS multi-column; uses scroll-snap pages) */
+/* Reading modes — solid height chain for horizontal / two-page */
 html[data-reading-mode="scroll-vertical"] .reader-content {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
 }
 html[data-reading-mode="scroll-horizontal"] .reader-content {
-  overflow: hidden;
+  overflow: hidden !important;
+  position: relative;
 }
-html[data-reading-mode="paged"] .reader-content,
-html[data-reading-mode="two-page"] .reader-content {
+html[data-reading-mode="paged"] .reader-content {
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+}
+html[data-reading-mode="two-page"] .reader-content {
+  overflow: hidden !important;
+  position: relative;
 }
 
 html[data-reading-mode="scroll-vertical"] .text-reader {
@@ -1691,36 +1691,48 @@ html[data-reading-mode="scroll-vertical"] .text-reader {
   margin: 0 auto;
 }
 
+/* Horizontal: fill the reader viewport, swipe pages left/right */
 .text-reader.reading-horizontal {
+  position: absolute !important;
+  inset: 0 !important;
   max-width: none !important;
-  width: 100%;
-  height: 100%;
-  min-height: 100%;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
   padding: 0 !important;
-  margin: 0;
+  white-space: normal !important;
+  overflow: hidden !important;
 }
 .text-h-track {
   display: flex;
   flex-direction: row;
+  flex-wrap: nowrap;
   width: 100%;
   height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
 }
 .text-h-track::-webkit-scrollbar { display: none; }
 .text-h-page {
   flex: 0 0 100%;
   width: 100%;
+  min-width: 100%;
+  max-width: 100%;
   height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   scroll-snap-align: start;
   scroll-snap-stop: always;
-  padding: 28px 5vw 48px;
+  padding: 20px 5vw 40px;
   box-sizing: border-box;
+  white-space: normal;
 }
 
 .text-reader.reading-paged {
@@ -1730,48 +1742,79 @@ html[data-reading-mode="scroll-vertical"] .text-reader {
   padding-bottom: 48px;
 }
 
-/* True two-page spread (no CSS columns — reliable on iOS/desktop) */
+/* Two-page spread — fills viewport */
 .text-reader.reading-two-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px 16px 40px;
-  height: 100%;
+  position: absolute !important;
+  inset: 0 !important;
+  max-width: none !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 12px 14px 16px !important;
+  white-space: normal !important;
+  overflow: hidden !important;
+  box-sizing: border-box;
 }
 .text-two-page-spread {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 28px 40px;
+  gap: 0 28px;
+  width: 100%;
   height: 100%;
-  min-height: 60vh;
+  min-height: 0;
 }
 .text-two-page-col {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 8px 12px;
-  border-right: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 8px 14px;
+  border-right: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  box-sizing: border-box;
 }
 .text-two-page-col:last-child { border-right: none; }
-.text-empty-col { min-height: 40vh; opacity: 0.3; }
+.text-empty-col { min-height: 30vh; opacity: 0.25; }
 
-@media (max-width: 719px) {
-  .text-two-page-spread { grid-template-columns: 1fr; gap: 0; }
-  .text-two-page-col { border-right: none; }
+/* Narrow phones: stack two pages vertically still as a "spread" */
+@media (max-width: 559px) {
+  .text-two-page-spread {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 10px 0;
+  }
+  .text-two-page-col {
+    border-right: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+    padding: 6px 8px;
+  }
+  .text-two-page-col:last-child { border-bottom: none; }
 }
 
-.reading-mode-toggle { display:none; }
+.reading-mode-toggle { display: none; }
+
+/* PDF horizontal needs horizontal scroll on content */
+html[data-reading-mode="scroll-horizontal"] .reader-content:has(.pdf-viewer-horizontal) {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
+.pdf-viewer-horizontal {
+  min-height: 100%;
+  align-items: center;
+}
 
 @media (min-width: 900px) {
   .settings-modal { max-width: 720px; }
   .reader-header { padding-left: 24px; padding-right: 24px; }
   .reader-content { background: radial-gradient(circle at top, color-mix(in srgb, var(--surface) 55%, transparent), transparent 55%), var(--bg); }
-  #text-reader { min-height: 100%; }
 }
 
 @media (max-width: 700px) {
   .reading-mode-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .reading-mode-opt { min-height: 74px; padding: 10px; }
   .reading-mode-opt small { display: none; }
-  .text-h-page { padding: 20px 5vw 40px; }
+  .text-h-page { padding: 16px 4.5vw 36px; }
 }
 
 @supports not (color: color-mix(in srgb, black, white)) {
