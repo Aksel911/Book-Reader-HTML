@@ -411,9 +411,42 @@
     applyChromeState();
   }
 
+  function isIPhoneLike() {
+    // iPhone / iPod; iPad is OK to keep extra modes
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPod/i.test(ua)) return true;
+    // iPadOS 13+ can report as Mac — treat narrow touch Mac as phone-like
+    if (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1 && Math.min(window.innerWidth, window.innerHeight) < 500) return true;
+    return false;
+  }
+
+  function applyReadingModeAvailability() {
+    const phone = isIPhoneLike();
+    $$('.reading-mode-opt').forEach(btn => {
+      const m = btn.dataset.readingMode;
+      const hide = phone && (m === 'scroll-horizontal' || m === 'two-page');
+      btn.classList.toggle('hidden', hide);
+      btn.style.display = hide ? 'none' : '';
+      if (hide) btn.setAttribute('aria-hidden', 'true');
+      else btn.removeAttribute('aria-hidden');
+    });
+    // If current mode is unavailable on iPhone — fall back
+    if (phone && (state.readingMode === 'scroll-horizontal' || state.readingMode === 'two-page')) {
+      state.readingMode = 'scroll-vertical';
+      localStorage.setItem('readingMode', 'scroll-vertical');
+      applyReaderStyles();
+      $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b.dataset.readingMode === 'scroll-vertical'));
+    }
+  }
+
   async function setReadingMode(mode, rerender = true) {
     const allowed = new Set(['scroll-vertical','paged','scroll-horizontal','two-page']);
     if (!allowed.has(mode)) mode = 'scroll-vertical';
+    // iPhone: no horizontal / two-page
+    if (isIPhoneLike() && (mode === 'scroll-horizontal' || mode === 'two-page')) {
+      mode = 'scroll-vertical';
+      toast('На iPhone доступны «Вертикально» и «Страницы»', 1800);
+    }
     const prev = state.readingMode;
     state.readingMode = mode;
     localStorage.setItem('readingMode', mode);
@@ -2005,7 +2038,8 @@
     if (mode === 'scroll-vertical') {
       const rc = $('#reader-content');
       if (!rc) return false;
-      const step = Math.max(120, Math.floor(rc.clientHeight * 0.88));
+      // One viewport step only (was ~0.88 and sometimes felt like a double jump on iOS)
+      const step = Math.max(100, Math.floor(rc.clientHeight * 0.92));
       rc.scrollBy({ top: delta * step, behavior: 'smooth' });
       return true;
     }
@@ -2055,7 +2089,17 @@
     return true;
   }
 
+  // Prevent double-page jumps from ghost clicks / double touchend on iOS
+  let _navLockUntil = 0;
+  function canNavigate() {
+    const now = Date.now();
+    if (now < _navLockUntil) return false;
+    _navLockUntil = now + 320;
+    return true;
+  }
+
   function goPrev() {
+    if (!canNavigate()) return;
     if (state.currentType === 'pdf' && state.pdfPage > 1) {
       if (isPdfContinuous()) {
         state.pdfPage--;
@@ -2075,6 +2119,7 @@
     else goTextPage(-1);
   }
   function goNext() {
+    if (!canNavigate()) return;
     if (state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) {
       if (isPdfContinuous()) {
         state.pdfPage++;
@@ -2872,6 +2917,10 @@
       e.stopPropagation();
       const mode = btn.dataset.readingMode;
       if (!mode) return;
+      if (isIPhoneLike() && (mode === 'scroll-horizontal' || mode === 'two-page')) {
+        toast('На iPhone этот вид недоступен', 1600);
+        return;
+      }
       // Immediate UI feedback (iOS Safari sometimes delays class updates)
       $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b === btn));
       await setReadingMode(mode);
@@ -2883,6 +2932,7 @@
       }
     });
   });
+  applyReadingModeAvailability();
 
   $('#tts-continuous').addEventListener('change', e => { state.continuousTTS = e.target.checked; });
   $('#tts-highlight').addEventListener('change', e => { state.highlightTTS = e.target.checked; });
@@ -3017,5 +3067,5 @@
     }, true);
   }
 
-  console.log('Умный Читатель v6.9 готов 📚✨');
+  console.log('Умный Читатель v6.10 готов 📚✨');
 })();
