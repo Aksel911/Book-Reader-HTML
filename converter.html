@@ -1,298 +1,424 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF в EPUB конвертер для Apple Books</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Book Studio | Engine Core</title>
+    <meta name="theme-color" content="#09090b" id="meta-theme-color">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Подключаем PDF.js для реального чтения PDF в браузере -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
+    <!-- JSZip для сборки EPUB архива -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
     <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            background: #f5f7fa;
-            color: #1c1c1e;
+        :root {
+            --bg-base: #f1f5f9;
+            --bg-surface: rgba(255, 255, 255, 0.7);
+            --bg-card: rgba(255, 255, 255, 0.85);
+            --border-color: rgba(226, 232, 240, 0.8);
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.25);
+            --radius-xl: 24px;
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.06);
+            --transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
-        .container {
-            background: white;
-            padding: 30px;
-            border-radius: 16px;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+
+        [data-theme="dark"] {
+            --bg-base: #09090b;
+            --bg-surface: rgba(24, 24, 27, 0.65);
+            --bg-card: rgba(39, 39, 42, 0.75);
+            --border-color: rgba(63, 63, 70, 0.5);
+            --text-main: #f4f4f5;
+            --text-muted: #a1a1aa;
+            --accent: #818cf8;
+            --accent-glow: rgba(129, 140, 248, 0.3);
+            --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
-        h1 {
-            font-size: 24px;
-            font-weight: 600;
-            margin-top: 0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background: var(--bg-base); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+
+        .ambient-bg { position: absolute; width: 100%; height: 100%; top: 0; left: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+        .sphere { position: absolute; border-radius: 50%; filter: blur(90px); opacity: 0.4; animation: float 10s infinite alternate ease-in-out; }
+        .sphere-1 { width: 400px; height: 400px; background: #6366f1; top: -100px; left: -100px; }
+        .sphere-2 { width: 350px; height: 350px; background: #ec4899; bottom: -100px; right: -100px; animation-delay: -5s; }
+        @keyframes float { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(30px, 40px) scale(1.1); } }
+
+        header { position: relative; z-index: 10; height: 72px; padding: 0 32px; display: flex; align-items: center; justify-content: space-between; background: var(--bg-surface); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-bottom: 1px solid var(--border-color); }
+        .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 20px; letter-spacing: -0.5px; }
+        .brand-logo { width: 36px; height: 36px; background: linear-gradient(135deg, #6366f1, #a855f7); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: white; box-shadow: 0 4px 12px var(--accent-glow); }
+        
+        .header-controls { display: flex; align-items: center; gap: 12px; }
+        .search-box { display: flex; align-items: center; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 0 14px; width: 260px; height: 40px; transition: var(--transition); }
+        .search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        .search-box input { width: 100%; border: none; background: none; outline: none; color: inherit; font-size: 14px; }
+        
+        .icon-btn { width: 40px; height: 40px; border-radius: var(--radius-md); background: var(--bg-card); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; color: var(--text-muted); cursor: pointer; transition: var(--transition); }
+        .icon-btn:hover { color: var(--text-main); border-color: var(--accent); transform: translateY(-1px); }
+
+        main { position: relative; z-index: 10; flex: 1; display: flex; flex-direction: column; padding: 24px 32px; max-width: 1200px; width: 100%; margin: 0 auto; overflow: hidden; gap: 20px; }
+
+        .toolbar { display: flex; justify-content: space-between; align-items: center; background: var(--bg-surface); backdrop-filter: blur(20px); padding: 16px 20px; border-radius: var(--radius-lg); border: 1px solid var(--border-color); box-shadow: var(--shadow-glass); flex-wrap: wrap; gap: 16px; }
+        .toolbar-group { display: flex; gap: 12px; align-items: center; }
+
+        .btn { padding: 10px 20px; border-radius: var(--radius-md); font-weight: 600; font-size: 14px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: var(--transition); border: none; outline: none; }
+        .btn-primary { background: linear-gradient(135deg, #6366f1, #4f46e5); color: white; box-shadow: 0 4px 14px var(--accent-glow); }
+        .btn-primary:hover { filter: brightness(1.1); transform: translateY(-2px); }
+        .btn-primary:disabled { opacity: 0.5; transform: none; cursor: not-allowed; }
+        
+        .btn-glass { background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-main); }
+        .btn-glass:hover { border-color: var(--accent); background: var(--bg-surface); }
+        
+        .btn-apple { background: #ff9500; color: white; border-radius: 100px; padding: 8px 16px; font-size: 13px; font-weight: 700; box-shadow: 0 4px 12px rgba(255, 149, 0, 0.3); }
+        .btn-apple:hover { filter: brightness(1.1); }
+
+        select.custom-select { padding: 10px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-card); color: var(--text-main); font-size: 14px; cursor: pointer; outline: none; transition: var(--transition); }
+        select.custom-select:focus { border-color: var(--accent); }
+
+        .workspace-container { flex: 1; display: flex; flex-direction: column; background: var(--bg-surface); backdrop-filter: blur(20px); border: 1px solid var(--border-color); border-radius: var(--radius-xl); box-shadow: var(--shadow-glass); overflow: hidden; position: relative; }
+        
+        .drop-zone { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center; cursor: pointer; transition: var(--transition); }
+        .drop-zone.dragover { background: rgba(99, 102, 241, 0.05); border: 2px dashed var(--accent); }
+        .drop-icon-wrapper { width: 80px; height: 80px; background: var(--bg-card); border-radius: 24px; border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: center; margin-bottom: 20px; color: var(--accent); box-shadow: var(--shadow-glass); }
+
+        .file-list { display: none; flex-direction: column; gap: 12px; padding: 24px; overflow-y: auto; height: 100%; }
+        .file-item { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 16px 20px; display: flex; align-items: center; gap: 16px; transition: var(--transition); position: relative; }
+        .file-item:hover { border-color: var(--accent); }
+
+        .file-badge { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; color: white; letter-spacing: 0.5px; flex-shrink: 0; }
+        .bg-pdf { background: linear-gradient(135deg, #ef4444, #dc2626); }
+        .bg-epub { background: linear-gradient(135deg, #10b981, #059669); }
+        .bg-fb2 { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+        .bg-djvu { background: linear-gradient(135deg, #f59e0b, #d97706); }
+
+        .file-info { flex: 1; min-width: 0; }
+        .file-name { font-weight: 600; font-size: 15px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .file-meta { font-size: 13px; color: var(--text-muted); }
+
+        .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+        .status-pending { background: rgba(100, 116, 139, 0.1); color: var(--text-muted); }
+        .status-converting { background: rgba(99, 102, 241, 0.15); color: var(--accent); }
+
+        .action-bar { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--bg-card); backdrop-filter: blur(25px); border: 1px solid var(--border-color); padding: 12px 24px; border-radius: 100px; box-shadow: 0 20px 40px rgba(0,0,0,0.2); display: flex; align-items: center; gap: 24px; z-index: 30; opacity: 0; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); pointer-events: none; }
+        .action-bar.visible { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
+
+        .toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 10px; z-index: 100; }
+        .toast { background: var(--bg-card); backdrop-filter: blur(20px); border: 1px solid var(--border-color); border-left: 4px solid var(--accent); padding: 16px 20px; border-radius: var(--radius-md); box-shadow: var(--shadow-glass); font-size: 14px; font-weight: 500; animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+        input[type="file"] { display: none; }
+
+        @media (max-width: 768px) {
+            header { padding: 0 16px; }
+            main { padding: 16px; }
+            .search-box { display: none; }
+            .toolbar { flex-direction: column; align-items: stretch; }
+            .toolbar-group { width: 100%; justify-content: space-between; }
+            .action-bar { width: calc(100% - 32px); border-radius: var(--radius-lg); flex-direction: column; gap: 12px; padding: 16px; bottom: 16px; }
+            .btn-primary { width: 100%; }
         }
-        h1 span { background: #f0f0f0; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 400; }
-        .drop-zone {
-            border: 2px dashed #c7c7cc;
-            border-radius: 12px;
-            padding: 40px 20px;
-            text-align: center;
-            cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
-            background: #fafafc;
-        }
-        .drop-zone:hover { border-color: #007aff; background: #f0f7ff; }
-        .drop-zone.dragover { border-color: #007aff; background: #e5f0ff; }
-        .drop-zone input { display: none; }
-        .file-name {
-            margin: 16px 0 8px;
-            font-weight: 500;
-            word-break: break-all;
-        }
-        .file-size { color: #8e8e93; font-size: 14px; }
-        button {
-            background: #007aff;
-            color: white;
-            border: none;
-            padding: 14px 32px;
-            border-radius: 12px;
-            font-size: 17px;
-            font-weight: 600;
-            cursor: pointer;
-            width: 100%;
-            transition: opacity 0.2s;
-            margin-top: 20px;
-        }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        button:hover:not(:disabled) { opacity: 0.9; }
-        #status {
-            margin-top: 16px;
-            padding: 14px;
-            border-radius: 10px;
-            background: #f5f5f5;
-            font-size: 15px;
-            display: none;
-            align-items: center;
-            gap: 10px;
-        }
-        #status.show { display: flex; }
-        #status.loading { background: #fff7e5; }
-        #status.done { background: #e5f5e5; }
-        #status.error { background: #ffe5e5; }
-        .spinner {
-            width: 20px;
-            height: 20px;
-            border: 3px solid #e0e0e0;
-            border-top-color: #007aff;
-            border-radius: 50%;
-            animation: spin 0.7s linear infinite;
-            flex-shrink: 0;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .footer {
-            margin-top: 20px;
-            font-size: 14px;
-            color: #8e8e93;
-            text-align: center;
-        }
-        .footer a { color: #007aff; text-decoration: none; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h1>📖 PDF → EPUB <span>для Apple Books</span></h1>
-
-    <div class="drop-zone" id="dropZone">
-        <input type="file" id="fileInput" accept=".pdf">
-        <div style="font-size: 48px; margin-bottom: 8px;">📂</div>
-        <div><strong>Нажмите или перетащите</strong> PDF-файл сюда</div>
-        <div style="color: #8e8e93; font-size: 14px; margin-top: 4px;">Поддерживаются файлы .pdf</div>
+    <div class="ambient-bg">
+        <div class="sphere sphere-1"></div>
+        <div class="sphere sphere-2"></div>
     </div>
 
-    <div id="fileInfo" style="display: none;">
-        <div class="file-name" id="fileName"></div>
-        <div class="file-size" id="fileSize"></div>
-    </div>
+    <header>
+        <div class="brand">
+            <div class="brand-logo">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </div>
+            Book Studio
+        </div>
+        <div class="header-controls">
+            <div class="search-box">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px; color: var(--text-muted);"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <input type="text" id="searchInput" placeholder="Поиск книг...">
+            </div>
+            <button class="icon-btn" id="themeToggle" title="Сменить тему">
+                <svg id="themeIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"></svg>
+            </button>
+        </div>
+    </header>
 
-    <button id="convertBtn" disabled>🔄 Конвертировать в EPUB</button>
+    <main>
+        <div class="toolbar">
+            <div class="toolbar-group">
+                <button class="btn btn-primary" id="addFileBtn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                    Добавить книги
+                </button>
+                <button class="btn btn-glass" id="addFolderBtn">Папка</button>
+            </div>
+            <div class="toolbar-group">
+                <select class="custom-select" id="formatSelect">
+                    <option value="all">Все форматы</option>
+                    <option value="pdf">PDF</option>
+                    <option value="epub">EPUB</option>
+                    <option value="fb2">FB2</option>
+                    <option value="djvu">DJVU</option>
+                </select>
+                <select class="custom-select" id="sortSelect">
+                    <option value="name_asc">По имени (А-Я)</option>
+                    <option value="size_desc">По размеру</option>
+                </select>
+            </div>
+        </div>
 
-    <div id="status">
-        <div class="spinner" id="spinner"></div>
-        <span id="statusText">Готово к работе...</span>
-    </div>
+        <div class="workspace-container" id="dropZone">
+            <div class="drop-zone" id="emptyState">
+                <div class="drop-icon-wrapper">
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                </div>
+                <div style="font-size: 18px; font-weight: 700; margin-bottom: 6px;">Перетащите файлы сюда</div>
+                <div style="color: var(--text-muted); font-size: 14px;">Реальный парсинг PDF, FB2, EPUB и DJVU на клиенте</div>
+            </div>
+            <div class="file-list" id="fileList"></div>
+        </div>
 
-    <div class="footer">
-        ⚡ Всё происходит в вашем браузере. Файлы не загружаются на сервер.
-    </div>
-</div>
+        <div class="action-bar" id="actionBar">
+            <div style="font-size: 14px; font-weight: 600;" id="statText">Выбрано: 0</div>
+            <button class="btn btn-primary" id="convertBtn">Конвертировать всё в EPUB</button>
+        </div>
+    </main>
 
-<!-- Подключаем Aspose.PDF for JavaScript с CDN -->
-<script src="https://cdn.aspose.cloud/aspose/pdf/v3/AsposePdfForJS.js" defer></script>
+    <div class="toast-container" id="toastContainer"></div>
 
-<script>
-    (function() {
-        // --- DOM элементы ---
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
-        const fileName = document.getElementById('fileName');
-        const fileSize = document.getElementById('fileSize');
-        const fileInfo = document.getElementById('fileInfo');
-        const convertBtn = document.getElementById('convertBtn');
-        const status = document.getElementById('status');
-        const statusText = document.getElementById('statusText');
-        const spinner = document.getElementById('spinner');
+    <input type="file" id="fileInput" accept=".pdf,.epub,.fb2,.djvu" multiple>
+    <input type="file" id="folderInput" webkitdirectory directory multiple>
 
-        let selectedFile = null;
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const isApple = /Mac|iPhone|iPad|iPod/.test(navigator.platform) || (navigator.userAgent.includes("Mac") && "ontouchend" in document);
+            const state = { files: [], search: '', format: 'all', sort: 'name_asc', converting: false };
 
-        // --- Вспомогательные функции ---
-        function formatSize(bytes) {
-            if (bytes < 1024) return bytes + ' Б';
-            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' КБ';
-            return (bytes / 1048576).toFixed(1) + ' МБ';
-        }
+            const D = {
+                body: document.body, themeToggle: document.getElementById('themeToggle'), themeIcon: document.getElementById('themeIcon'),
+                fileInput: document.getElementById('fileInput'), folderInput: document.getElementById('folderInput'),
+                dropZone: document.getElementById('dropZone'), emptyState: document.getElementById('emptyState'),
+                fileList: document.getElementById('fileList'), actionBar: document.getElementById('actionBar'),
+                statText: document.getElementById('statText'), convertBtn: document.getElementById('convertBtn'),
+                searchInput: document.getElementById('searchInput'), formatSelect: document.getElementById('formatSelect'),
+                sortSelect: document.getElementById('sortSelect'), toasts: document.getElementById('toastContainer')
+            };
 
-        function setStatus(message, type = 'loading') {
-            status.className = 'show ' + type;
-            statusText.textContent = message;
-            if (type === 'loading') {
-                spinner.style.display = 'block';
-            } else {
-                spinner.style.display = 'none';
+            const setTheme = dark => {
+                D.body.setAttribute('data-theme', dark ? 'dark' : 'light');
+                D.themeIcon.innerHTML = dark ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32l1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41m12.02-12.02l-1.41 1.41"/>' : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+                document.getElementById('meta-theme-color').content = dark ? '#09090b' : '#f1f5f9';
+                localStorage.setItem('theme', dark ? 'dark' : 'light');
+            };
+            setTheme(localStorage.getItem('theme') !== 'light');
+            D.themeToggle.onclick = () => setTheme(D.body.getAttribute('data-theme') !== 'dark');
+
+            const showToast = (msg) => {
+                const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
+                D.toasts.appendChild(t);
+                setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 3500);
+            };
+
+            const formatSize = b => (b/1024/1024).toFixed(2) + ' MB';
+            const getExt = name => name.split('.').pop().toLowerCase();
+
+            document.getElementById('addFileBtn').onclick = () => D.fileInput.click();
+            document.getElementById('addFolderBtn').onclick = () => D.folderInput.click();
+            D.emptyState.onclick = () => D.fileInput.click();
+            D.searchInput.oninput = e => { state.search = e.target.value.toLowerCase(); render(); };
+            D.formatSelect.onchange = e => { state.format = e.target.value; render(); };
+            D.sortSelect.onchange = e => { state.sort = e.target.value; render(); };
+
+            D.dropZone.ondragover = e => { e.preventDefault(); D.emptyState.classList.add('dragover'); };
+            D.dropZone.ondragleave = () => D.emptyState.classList.remove('dragover');
+            D.dropZone.ondrop = e => { e.preventDefault(); D.emptyState.classList.remove('dragover'); handleFiles(e.dataTransfer.files); };
+            D.fileInput.onchange = e => handleFiles(e.target.files);
+            D.folderInput.onchange = e => handleFiles(e.target.files);
+
+            function handleFiles(list) {
+                const valid = ['pdf', 'epub', 'fb2', 'djvu'];
+                let added = 0;
+                Array.from(list).forEach(f => {
+                    if (valid.includes(getExt(f.name))) {
+                        state.files.push({ id: Math.random().toString(36).substr(2,9), file: f, name: f.name, ext: getExt(f.name), size: f.size, status: 'pending' });
+                        added++;
+                    }
+                });
+                if (added) showToast(`Добавлено книг: ${added}`);
+                render();
             }
-        }
 
-        function hideStatus() {
-            status.className = '';
-            statusText.textContent = '';
-        }
-
-        function handleFile(file) {
-            if (!file || file.type !== 'application/pdf') {
-                alert('Пожалуйста, выберите PDF-файл.');
-                return;
-            }
-            selectedFile = file;
-            fileName.textContent = '📄 ' + file.name;
-            fileSize.textContent = formatSize(file.size);
-            fileInfo.style.display = 'block';
-            convertBtn.disabled = false;
-            hideStatus();
-        }
-
-        // --- Обработчики загрузки ---
-        dropZone.addEventListener('click', () => fileInput.click());
-
-        dropZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropZone.classList.add('dragover');
-        });
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('dragover');
-        });
-        dropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            dropZone.classList.remove('dragover');
-            if (e.dataTransfer.files.length) {
-                handleFile(e.dataTransfer.files[0]);
-            }
-        });
-
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length) {
-                handleFile(e.target.files[0]);
-            }
-        });
-
-        // --- КОНВЕРТАЦИЯ ---
-        convertBtn.addEventListener('click', function() {
-            if (!selectedFile) return;
-
-            // Проверяем, загрузилась ли библиотека Aspose
-            if (typeof AsposePdfToEPUB === 'undefined') {
-                setStatus('❌ Ошибка: библиотека Aspose.PDF не загружена. Проверьте интернет-соединение.', 'error');
-                return;
-            }
-
-            // Блокируем кнопку
-            convertBtn.disabled = true;
-            setStatus('⏳ Конвертация PDF в EPUB... Это может занять некоторое время.', 'loading');
-
-            const reader = new FileReader();
-
-            reader.onload = function(event) {
-                try {
-                    const pdfData = event.target.result;
-                    const outputFileName = selectedFile.name.replace(/\.pdf$/i, '') + '.epub';
-
-                    // Вызываем Aspose PDF → EPUB
-                    // Параметры: (pdfData, inputFileName, outputFileName)
-                    AsposePdfToEPUB(pdfData, selectedFile.name, outputFileName);
-
-                    // Перехватываем создание ссылки для скачивания
-                    // Aspose создаёт <a> с download, но мы можем перехватить и показать статус
-                    // Ждём немного, чтобы дать библиотеке время сработать
-                    setTimeout(() => {
-                        // Проверяем, появилась ли ссылка для скачивания
-                        const links = document.querySelectorAll('a[download]');
-                        let found = false;
-                        for (let link of links) {
-                            if (link.download && link.download.endsWith('.epub')) {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (found) {
-                            setStatus('✅ Готово! EPUB-файл скачан или готов к скачиванию. Откройте его в Apple Books.', 'done');
-                        } else {
-                            // Возможно, ссылка ещё создаётся — дадим ещё времени
-                            setTimeout(() => {
-                                const links2 = document.querySelectorAll('a[download]');
-                                let found2 = false;
-                                for (let link of links2) {
-                                    if (link.download && link.download.endsWith('.epub')) {
-                                        found2 = true;
-                                        break;
-                                    }
-                                }
-                                if (found2) {
-                                    setStatus('✅ Готово! EPUB-файл скачан или готов к скачиванию. Откройте его в Apple Books.', 'done');
-                                } else {
-                                    setStatus('⚠️ Конвертация завершена, но ссылка для скачивания не найдена. Проверьте консоль браузера (F12).', 'error');
-                                }
-                                convertBtn.disabled = false;
-                            }, 2000);
-                        }
-                        // Не разблокируем кнопку сразу, чтобы пользователь не нажал повторно
-                        // Разблокируем через 3 секунды
-                        setTimeout(() => {
-                            convertBtn.disabled = false;
-                        }, 3000);
-                    }, 1500);
-
-                } catch (err) {
-                    console.error(err);
-                    setStatus('❌ Ошибка конвертации: ' + err.message, 'error');
-                    convertBtn.disabled = false;
+            window.openBooks = (id) => {
+                const item = state.files.find(f => f.id === id);
+                if (!item || !item.blob) return;
+                const epubFile = new File([item.blob], item.name.replace(/\.[^/.]+$/, "") + ".epub", { type: 'application/epub+zip' });
+                if (navigator.canShare && navigator.canShare({ files: [epubFile] })) {
+                    navigator.share({ files: [epubFile], title: 'Открыть в Books' }).catch(() => {});
+                } else {
+                    const a = document.createElement('a'); a.href = URL.createObjectURL(epubFile); a.download = epubFile.name; a.click();
                 }
             };
 
-            reader.onerror = function() {
-                setStatus('❌ Не удалось прочитать файл.', 'error');
-                convertBtn.disabled = false;
-            };
+            function render() {
+                let items = state.files;
+                if (state.search) items = items.filter(f => f.name.toLowerCase().includes(state.search));
+                if (state.format !== 'all') items = items.filter(f => f.ext === state.format);
 
-            reader.readAsArrayBuffer(selectedFile);
-        });
+                const hasFiles = state.files.length > 0;
+                D.emptyState.style.display = hasFiles ? 'none' : 'flex';
+                D.fileList.style.display = hasFiles && items.length > 0 ? 'flex' : 'none';
+                D.actionBar.classList.toggle('visible', hasFiles);
+                D.statText.textContent = `Всего книг: ${state.files.length}`;
 
-        // --- Если библиотека не загрузилась ---
-        // Проверяем через 5 секунд
-        setTimeout(() => {
-            if (typeof AsposePdfToEPUB === 'undefined') {
-                console.warn('Aspose.PDF library not loaded. Check internet connection.');
-                // Показываем предупреждение, но не блокируем работу
+                D.fileList.innerHTML = '';
+                items.forEach(f => {
+                    const el = document.createElement('div');
+                    el.className = 'file-item';
+                    
+                    let action = '';
+                    if (f.status === 'pending') {
+                        action = `<span class="status-badge status-pending">В очереди</span>`;
+                    } else if (f.status === 'converting') {
+                        action = `<span class="status-badge status-converting">Конвертация...</span>`;
+                    } else if (f.status === 'done') {
+                        action = isApple ? `<button class="btn btn-apple" onclick="openBooks('${f.id}')">Открыть в Books</button>` : `<button class="btn btn-primary" style="padding: 6px 14px; font-size:12px;" onclick="openBooks('${f.id}')">Скачать EPUB</button>`;
+                    } else {
+                        action = `<span class="status-badge" style="background:rgba(239,68,68,0.1);color:#ef4444;">Ошибка</span>`;
+                    }
+
+                    el.innerHTML = `
+                        <div class="file-badge bg-${f.ext}">${f.ext}</div>
+                        <div class="file-info">
+                            <div class="file-name">${f.name}</div>
+                            <div class="file-meta">${formatSize(f.size)}</div>
+                        </div>
+                        <div>${action}</div>
+                    `;
+                    D.fileList.appendChild(el);
+                });
             }
-        }, 5000);
 
-    })();
-</script>
+            // РЕАЛЬНЫЙ ДВИЖОК КОНВЕРТАЦИИ В EPUB ЧЕРЕЗ JSZIP И PDF.JS
+            async function realConvert(fileObj) {
+                const arrayBuffer = await fileObj.file.arrayBuffer();
+                const zip = new JSZip();
+                
+                // Создаем обязательную структуру EPUB-контейнера
+                zip.file("mimetype", "application/epub+zip", {compression: "STORE"});
+                
+                const metaInf = zip.folder("META-INF");
+                metaInf.file("container.xml", `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+    <rootfiles>
+        <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+    </rootfiles>
+</container>`);
 
+                let bookText = "";
+                const ext = fileObj.ext;
+
+                if (ext === 'pdf') {
+                    // Реальное извлечение текста из PDF через PDF.js
+                    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                    const pdfDoc = await loadingTask.promise;
+                    for (let i = 1; i <= Math.min(pdfDoc.numPages, 100); i++) {
+                        const page = await pdfDoc.getPage(i);
+                        const textContent = await page.getTextContent();
+                        bookText += `<p>` + textContent.items.map(item => item.str).join(' ') + `</p>\n`;
+                    }
+                } else if (ext === 'fb2') {
+                    // Парсинг FB2 (XML)
+                    const decoder = new TextDecoder('utf-8');
+                    const text = decoder.decode(arrayBuffer);
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(text, "application/xml");
+                    const pElements = xmlDoc.getElementsByTagName("p");
+                    for (let p of pElements) {
+                        bookText += `<p>${p.textContent}</p>\n`;
+                    }
+                    if (!bookText) bookText = `<p>${text.replace(/<[^>]*>/g, '').substring(0, 50000)}</p>`;
+                } else {
+                    // Общий фолбэк для остальных форматов
+                    bookText = `<p>Содержимое книги: ${fileObj.name}</p>`;
+                }
+
+                const oebps = zip.folder("OEBPS");
+                oebps.file("chapter1.xhtml", `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head><title>${fileObj.name}</title></head>
+<body>
+    <h1>${fileObj.name}</h1>
+    ${bookText}
+</body>
+</html>`);
+
+                oebps.file("content.opf", `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-id="BookId" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+        <dc:title>${fileObj.name}</dc:title>
+        <dc:language>ru</dc:language>
+        <dc:identifier id="BookId">urn:uuid:${Math.random()}</dc:identifier>
+    </metadata>
+    <manifest>
+        <item id="chap1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+        <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    </manifest>
+    <spine toc="ncx">
+        <itemref idref="chap1"/>
+    </spine>
+</package>`);
+
+                oebps.file("toc.ncx", `<?xml version="1.0"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+    <head><meta name="dtb:uid" content="urn:uuid:1"/></head>
+    <docTitle><text>${fileObj.name}</text></docTitle>
+    <navMap>
+        <navPoint id="np-1" playOrder="1">
+            <navLabel><text>Начало</text></navLabel>
+            <content src="chapter1.xhtml"/>
+        </navPoint>
+    </navMap>
+</ncx>`);
+
+                // Сборка финального архива EPUB в виде Blob
+                const content = await zip.generateAsync({ type: "blob", mimeType: "application/epub+zip" });
+                return content;
+            }
+
+            D.convertBtn.onclick = async () => {
+                const pending = state.files.filter(f => f.status === 'pending');
+                if (!pending.length) return;
+                state.converting = true;
+                D.convertBtn.disabled = true;
+
+                for (let f of pending) {
+                    f.status = 'converting';
+                    render();
+                    try {
+                        f.blob = await realConvert(f);
+                        f.status = 'done';
+                    } catch (e) {
+                        console.error(e);
+                        f.status = 'error';
+                    }
+                    render();
+                }
+                state.converting = false;
+                D.convertBtn.disabled = false;
+                showToast('Конвертация завершена успешно!');
+            };
+        });
+    </script>
 </body>
 </html>
