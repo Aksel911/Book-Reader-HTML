@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF в EPUB конвертер для Apple Books</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f7fa;
+            color: #1c1c1e;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        h1 span { background: #f0f0f0; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 400; }
+        .drop-zone {
+            border: 2px dashed #c7c7cc;
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            background: #fafafc;
+        }
+        .drop-zone:hover { border-color: #007aff; background: #f0f7ff; }
+        .drop-zone.dragover { border-color: #007aff; background: #e5f0ff; }
+        .drop-zone input { display: none; }
+        .file-name {
+            margin: 16px 0 8px;
+            font-weight: 500;
+            word-break: break-all;
+        }
+        .file-size { color: #8e8e93; font-size: 14px; }
+        button {
+            background: #007aff;
+            color: white;
+            border: none;
+            padding: 14px 32px;
+            border-radius: 12px;
+            font-size: 17px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: opacity 0.2s;
+            margin-top: 20px;
+        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button:hover:not(:disabled) { opacity: 0.9; }
+        #status {
+            margin-top: 16px;
+            padding: 14px;
+            border-radius: 10px;
+            background: #f5f5f5;
+            font-size: 15px;
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+        #status.show { display: flex; }
+        #status.loading { background: #fff7e5; }
+        #status.done { background: #e5f5e5; }
+        #status.error { background: #ffe5e5; }
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 3px solid #e0e0e0;
+            border-top-color: #007aff;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            flex-shrink: 0;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .footer {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #8e8e93;
+            text-align: center;
+        }
+        .footer a { color: #007aff; text-decoration: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📖 PDF → EPUB <span>для Apple Books</span></h1>
+
+    <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept=".pdf">
+        <div style="font-size: 48px; margin-bottom: 8px;">📂</div>
+        <div><strong>Нажмите или перетащите</strong> PDF-файл сюда</div>
+        <div style="color: #8e8e93; font-size: 14px; margin-top: 4px;">Поддерживаются файлы .pdf</div>
+    </div>
+
+    <div id="fileInfo" style="display: none;">
+        <div class="file-name" id="fileName"></div>
+        <div class="file-size" id="fileSize"></div>
+    </div>
+
+    <button id="convertBtn" disabled>🔄 Конвертировать в EPUB</button>
+
+    <div id="status">
+        <div class="spinner" id="spinner"></div>
+        <span id="statusText">Готово к работе...</span>
+    </div>
+
+    <div class="footer">
+        ⚡ Всё происходит в вашем браузере. Файлы не загружаются на сервер.
+    </div>
+</div>
+
+<!-- Подключаем Aspose.PDF for JavaScript с CDN -->
+<script src="https://cdn.aspose.cloud/aspose/pdf/v3/AsposePdfForJS.js" defer></script>
+
+<script>
+    (function() {
+        // --- DOM элементы ---
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const fileInfo = document.getElementById('fileInfo');
+        const convertBtn = document.getElementById('convertBtn');
+        const status = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const spinner = document.getElementById('spinner');
+
+        let selectedFile = null;
+
+        // --- Вспомогательные функции ---
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' Б';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' КБ';
+            return (bytes / 1048576).toFixed(1) + ' МБ';
+        }
+
+        function setStatus(message, type = 'loading') {
+            status.className = 'show ' + type;
+            statusText.textContent = message;
+            if (type === 'loading') {
+                spinner.style.display = 'block';
+            } else {
+                spinner.style.display = 'none';
+            }
+        }
+
+        function hideStatus() {
+            status.className = '';
+            statusText.textContent = '';
+        }
+
+        function handleFile(file) {
+            if (!file || file.type !== 'application/pdf') {
+                alert('Пожалуйста, выберите PDF-файл.');
+                return;
+            }
+            selectedFile = file;
+            fileName.textContent = '📄 ' + file.name;
+            fileSize.textContent = formatSize(file.size);
+            fileInfo.style.display = 'block';
+            convertBtn.disabled = false;
+            hideStatus();
+        }
+
+        // --- Обработчики загрузки ---
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        // --- КОНВЕРТАЦИЯ ---
+        convertBtn.addEventListener('click', function() {
+            if (!selectedFile) return;
+
+            // Проверяем, загрузилась ли библиотека Aspose
+            if (typeof AsposePdfToEPUB === 'undefined') {
+                setStatus('❌ Ошибка: библиотека Aspose.PDF не загружена. Проверьте интернет-соединение.', 'error');
+                return;
+            }
+
+            // Блокируем кнопку
+            convertBtn.disabled = true;
+            setStatus('⏳ Конвертация PDF в EPUB... Это может занять некоторое время.', 'loading');
+
+            const reader = new FileReader();
+
+            reader.onload = function(event) {
+                try {
+                    const pdfData = event.target.result;
+                    const outputFileName = selectedFile.name.replace(/\.pdf$/i, '') + '.epub';
+
+                    // Вызываем Aspose PDF → EPUB
+                    // Параметры: (pdfData, inputFileName, outputFileName)
+                    AsposePdfToEPUB(pdfData, selectedFile.name, outputFileName);
+
+                    // Перехватываем создание ссылки для скачивания
+                    // Aspose создаёт <a> с download, но мы можем перехватить и показать статус
+                    // Ждём немного, чтобы дать библиотеке время сработать
+                    setTimeout(() => {
+                        // Проверяем, появилась ли ссылка для скачивания
+                        const links = document.querySelectorAll('a[download]');
+                        let found = false;
+                        for (let link of links) {
+                            if (link.download && link.download.endsWith('.epub')) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) {
+                            setStatus('✅ Готово! EPUB-файл скачан или готов к скачиванию. Откройте его в Apple Books.', 'done');
+                        } else {
+                            // Возможно, ссылка ещё создаётся — дадим ещё времени
+                            setTimeout(() => {
+                                const links2 = document.querySelectorAll('a[download]');
+                                let found2 = false;
+                                for (let link of links2) {
+                                    if (link.download && link.download.endsWith('.epub')) {
+                                        found2 = true;
+                                        break;
+                                    }
+                                }
+                                if (found2) {
+                                    setStatus('✅ Готово! EPUB-файл скачан или готов к скачиванию. Откройте его в Apple Books.', 'done');
+                                } else {
+                                    setStatus('⚠️ Конвертация завершена, но ссылка для скачивания не найдена. Проверьте консоль браузера (F12).', 'error');
+                                }
+                                convertBtn.disabled = false;
+                            }, 2000);
+                        }
+                        // Не разблокируем кнопку сразу, чтобы пользователь не нажал повторно
+                        // Разблокируем через 3 секунды
+                        setTimeout(() => {
+                            convertBtn.disabled = false;
+                        }, 3000);
+                    }, 1500);
+
+                } catch (err) {
+                    console.error(err);
+                    setStatus('❌ Ошибка конвертации: ' + err.message, 'error');
+                    convertBtn.disabled = false;
+                }
+            };
+
+            reader.onerror = function() {
+                setStatus('❌ Не удалось прочитать файл.', 'error');
+                convertBtn.disabled = false;
+            };
+
+            reader.readAsArrayBuffer(selectedFile);
+        });
+
+        // --- Если библиотека не загрузилась ---
+        // Проверяем через 5 секунд
+        setTimeout(() => {
+            if (typeof AsposePdfToEPUB === 'undefined') {
+                console.warn('Aspose.PDF library not loaded. Check internet connection.');
+                // Показываем предупреждение, но не блокируем работу
+            }
+        }, 5000);
+
+    })();
+</script>
+
+</body>
+</html>

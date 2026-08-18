@@ -83,42 +83,44 @@
           <div class="hero-stat"><strong id="hero-book-count">0</strong><span>файлов</span></div>
         </section>
         <div class="library-toolbar" id="library-toolbar">
-          <div id="folder-breadcrumb" class="folder-breadcrumb hidden"></div>
-          <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
-          <div class="toolbar-compact">
-            <div class="search-box">
-              <input type="search" id="search-books" placeholder="🔍 Поиск..." enterkeyhint="search">
+          <div class="toolbar-inner">
+            <div id="folder-breadcrumb" class="folder-breadcrumb hidden"></div>
+            <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
+            <div class="toolbar-compact">
+              <div class="search-box">
+                <input type="search" id="search-books" placeholder="🔍 Поиск..." enterkeyhint="search">
+              </div>
+              <div class="toolbar-actions">
+                <select id="filter-type" class="sort-select" aria-label="Формат">
+                  <option value="all">Формат</option>
+                  <option value="pdf">PDF</option>
+                  <option value="epub">EPUB</option>
+                  <option value="fb2">FB2</option>
+                  <option value="djvu">DJVU</option>
+                  <option value="txt">TXT</option>
+                  <option value="html">HTML</option>
+                  <option value="archive">Архивы</option>
+                </select>
+                <select id="filter-status" class="sort-select" aria-label="Статус">
+                  <option value="all">Статус</option>
+                  <option value="unread">Не начато</option>
+                  <option value="reading">Читаю</option>
+                  <option value="finished">Прочитано</option>
+                  <option value="favorites">⭐ Избранное</option>
+                </select>
+                <select id="sort-books" class="sort-select" aria-label="Сортировка">
+                  <option value="name">А–Я</option>
+                  <option value="progress">Прогресс</option>
+                  <option value="type">Формат</option>
+                  <option value="recent">Недавние</option>
+                  <option value="size">Размер</option>
+                </select>
+              </div>
             </div>
-            <div class="toolbar-actions">
-              <select id="filter-type" class="sort-select" aria-label="Формат">
-                <option value="all">Формат</option>
-                <option value="pdf">PDF</option>
-                <option value="epub">EPUB</option>
-                <option value="fb2">FB2</option>
-                <option value="djvu">DJVU</option>
-                <option value="txt">TXT</option>
-                <option value="html">HTML</option>
-                <option value="archive">Архивы</option>
-              </select>
-              <select id="filter-status" class="sort-select" aria-label="Статус">
-                <option value="all">Статус</option>
-                <option value="unread">Не начато</option>
-                <option value="reading">Читаю</option>
-                <option value="finished">Прочитано</option>
-                <option value="favorites">⭐ Избранное</option>
-              </select>
-              <select id="sort-books" class="sort-select" aria-label="Сортировка">
-                <option value="name">А–Я</option>
-                <option value="progress">Прогресс</option>
-                <option value="type">Формат</option>
-                <option value="recent">Недавние</option>
-                <option value="size">Размер</option>
-              </select>
+            <div class="toolbar-meta-row">
+              <div class="stats" id="library-stats"></div>
+              <div id="filter-chips" class="filter-chips"></div>
             </div>
-          </div>
-          <div class="toolbar-meta-row">
-            <div class="stats" id="library-stats"></div>
-            <div id="filter-chips" class="filter-chips"></div>
           </div>
         </div>
         <div id="books-grid" class="books-grid"></div>

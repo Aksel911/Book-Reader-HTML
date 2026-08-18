@@ -671,6 +671,10 @@ body::before {
   height: 36px;
   font-size: 0.9rem;
   border-radius: 8px;
+  touch-action: manipulation;
+}
+.reader-header .icon-btn {
+  touch-action: manipulation;
 }
 
 .reader-content {
@@ -680,6 +684,7 @@ body::before {
   -webkit-overflow-scrolling: touch;
   background: var(--bg);
   position: relative;
+  touch-action: pan-y;
 }
 
 .reading-progress-wrap {
@@ -719,6 +724,7 @@ body::before {
   align-self: center;
   opacity: 0.7;
   transition: opacity 0.15s, color 0.15s;
+  touch-action: manipulation;
 }
 .chrome-toggle-btn:hover,
 .chrome-toggle-btn:active { opacity: 1; color: var(--accent); }
@@ -767,6 +773,7 @@ body::before {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   cursor: pointer;
+  touch-action: manipulation;
 }
 .show-chrome-pill:active { transform: translateX(-50%) scale(0.96); }
 
@@ -854,6 +861,7 @@ body::before {
   align-items: center;
   justify-content: center;
   transition: background 0.15s, transform 0.1s;
+  touch-action: manipulation;
 }
 .ctrl-btn:active {
   background: var(--accent);
@@ -893,6 +901,7 @@ body::before {
   display: flex;
   align-items: center;
   justify-content: center;
+  touch-action: manipulation;
 }
 .tts-btn.small {
   width: 32px;
@@ -901,6 +910,7 @@ body::before {
   color: var(--text-secondary);
   border: 1px solid var(--border);
   font-size: 0.8rem;
+  touch-action: manipulation;
 }
 .tts-btn:active { opacity: 0.85; }
 .tts-select {
@@ -1318,26 +1328,35 @@ body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:
 .library-hero p:not(.eyebrow) { font-size:.94rem; max-width:560px; }
 .hero-stat { min-width:110px; padding:14px 16px; border-radius:18px; background:linear-gradient(135deg,rgba(255,255,255,.06),rgba(255,255,255,.018)); box-shadow:0 10px 40px rgba(0,0,0,.18); }
 .hero-stat strong { font-size:1.6rem; }
-/* Library toolbar: sticky, auto-hides smoothly on scroll down, returns on scroll up */
+/* Library toolbar: sticky, auto-hides smoothly on scroll down, returns on scroll up.
+   The transform/opacity animation lives on .toolbar-inner, NOT on the position:sticky
+   element itself — Safari/iOS breaks sticky positioning when a transform is applied
+   directly to the sticky element, causing the toolbar to reappear at a wrong offset. */
 .library-toolbar {
   position: sticky;
   top: 0;
   z-index: 12;
   margin: 0 0 12px;
-  padding: 8px 0 10px;
   gap: 8px;
+  border-bottom: 1px solid transparent;
+  pointer-events: auto;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+.library-toolbar .toolbar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 10px;
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(16px) saturate(1.15);
   -webkit-backdrop-filter: blur(16px) saturate(1.15);
-  border-bottom: 1px solid transparent;
   transform: translateY(0);
   opacity: 1;
-  pointer-events: auto;
   transition:
     transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.24s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
+    opacity 0.24s ease;
   will-change: transform, opacity;
 }
 .library-toolbar.is-scrolled {
@@ -1345,11 +1364,13 @@ body::after { content:""; position:fixed; inset:0; pointer-events:none; z-index:
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
 }
 .library-toolbar.is-hidden {
-  transform: translateY(calc(-100% - 6px));
-  opacity: 0;
   pointer-events: none;
   box-shadow: none;
   border-bottom-color: transparent;
+}
+.library-toolbar.is-hidden .toolbar-inner {
+  transform: translateY(calc(-100% - 6px));
+  opacity: 0;
 }
 .toolbar-compact {
   display: flex;

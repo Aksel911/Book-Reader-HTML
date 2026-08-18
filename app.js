@@ -357,6 +357,17 @@
       el.style.fontFamily = state.fontFamily;
     }
     $$('.reading-mode-opt').forEach(b => b.classList.toggle('active', b.dataset.readingMode === state.readingMode));
+    // Ensure native scrolling behavior matches reading mode
+    const rc = $('#reader-content');
+    if (rc) {
+      if (state.readingMode === 'scroll-vertical') {
+        rc.style.touchAction = 'pan-y';
+      } else if (state.readingMode === 'scroll-horizontal' || state.readingMode === 'paged') {
+        rc.style.touchAction = 'pan-x';
+      } else {
+        rc.style.touchAction = 'pan-x';
+      }
+    }
   }
 
   function applyChromeState() {
@@ -1662,6 +1673,8 @@
     $('#page-num').textContent = state.pdfPage;
     $('#page-count').textContent = state.pdfTotal;
     updateProgressBar();
+    // Expose renderOne for navigation fallback when page not yet rendered
+    state._pdfRenderOne = renderOne;
   }
 
   // ===== EPUB =====
@@ -2040,7 +2053,15 @@
       if (!rc) return false;
       // One viewport step only (was ~0.88 and sometimes felt like a double jump on iOS)
       const step = Math.max(100, Math.floor(rc.clientHeight * 0.92));
+      const expectedScrollTop = rc.scrollTop + delta * step;
       rc.scrollBy({ top: delta * step, behavior: 'smooth' });
+      // Estimate new textPage based on expected scroll position
+      const maxScroll = rc.scrollHeight - rc.clientHeight;
+      if (maxScroll > 0 && state.textPages.length) {
+        const ratio = Math.min(1, Math.max(0, expectedScrollTop / maxScroll));
+        state.textPage = Math.min(state.textPages.length - 1, Math.round(ratio * (state.textPages.length - 1)) || 0);
+        updateProgressBar();
+      }
       return true;
     }
     if (mode === 'scroll-horizontal') {
@@ -2091,6 +2112,7 @@
 
   // Prevent double-page jumps from ghost clicks / double touchend on iOS
   let _navLockUntil = 0;
+  let _swipeJustHappened = false;
   function canNavigate() {
     const now = Date.now();
     if (now < _navLockUntil) return false;
@@ -2098,17 +2120,31 @@
     return true;
   }
 
-  function goPrev() {
+  async function goPrev() {
     if (!canNavigate()) return;
     if (state.currentType === 'pdf' && state.pdfPage > 1) {
       if (isPdfContinuous()) {
         state.pdfPage--;
-        const el = document.querySelector(`#pdf-viewer [data-page-num="${state.pdfPage}"]`);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+        const tryScroll = () => {
+          const el = document.querySelector(`#pdf-viewer [data-page-num="${state.pdfPage}"]`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+            return true;
+          }
+          return false;
+        };
+        if (!tryScroll() && state._pdfRenderOne) {
+          try { await state._pdfRenderOne(state.pdfPage); } catch (e) { console.warn(e); }
+          // Wait for layout before scrolling to newly rendered page
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          tryScroll();
+        }
         $('#page-num').textContent = state.pdfPage;
-      } else renderPDFPage(state.pdfPage - 1);
+      } else await renderPDFPage(state.pdfPage - 1);
     }
-    else if (state.currentType === 'epub' && state.epubRendition) state.epubRendition.prev();
+    else if (state.currentType === 'epub' && state.epubRendition) {
+      try { await state.epubRendition.prev(); } catch (e) { console.warn(e); }
+    }
     else if ((state.currentType === 'djvu' || state.currentType === 'djv') && djvuViewerInstance) {
       try {
         const p = djvuViewerInstance.getPageNumber ? djvuViewerInstance.getPageNumber() : 1;
@@ -2118,17 +2154,31 @@
     }
     else goTextPage(-1);
   }
-  function goNext() {
+  async function goNext() {
     if (!canNavigate()) return;
     if (state.currentType === 'pdf' && state.pdfPage < state.pdfTotal) {
       if (isPdfContinuous()) {
         state.pdfPage++;
-        const el = document.querySelector(`#pdf-viewer [data-page-num="${state.pdfPage}"]`);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+        const tryScroll = () => {
+          const el = document.querySelector(`#pdf-viewer [data-page-num="${state.pdfPage}"]`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'start' });
+            return true;
+          }
+          return false;
+        };
+        if (!tryScroll() && state._pdfRenderOne) {
+          try { await state._pdfRenderOne(state.pdfPage); } catch (e) { console.warn(e); }
+          // Wait for layout before scrolling to newly rendered page
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          tryScroll();
+        }
         $('#page-num').textContent = state.pdfPage;
-      } else renderPDFPage(state.pdfPage + 1);
+      } else await renderPDFPage(state.pdfPage + 1);
     }
-    else if (state.currentType === 'epub' && state.epubRendition) state.epubRendition.next();
+    else if (state.currentType === 'epub' && state.epubRendition) {
+      try { await state.epubRendition.next(); } catch (e) { console.warn(e); }
+    }
     else if ((state.currentType === 'djvu' || state.currentType === 'djv') && djvuViewerInstance) {
       try {
         const p = djvuViewerInstance.getPageNumber ? djvuViewerInstance.getPageNumber() : 1;
@@ -2163,6 +2213,7 @@
   // Tap empty area of content to toggle chrome (reader-friendly on iPhone)
   let lastChromeTap = 0;
   $('#reader-content')?.addEventListener('click', (e) => {
+    if (_swipeJustHappened) return;
     // Ignore interactive elements inside content
     if (e.target.closest('a, button, input, select, textarea, .read-paragraph, .ctrl-btn')) return;
     const now = Date.now();
@@ -2174,15 +2225,48 @@
     }
   });
 
-  // Swipe (skip in horizontal mode — native scroll-snap handles paging)
+  // Swipe (skip in vertical mode — native scroll handles paging)
   let touchX = 0;
-  $('#reader-content').addEventListener('touchstart', e => { touchX = e.changedTouches[0].screenX; }, { passive: true });
-  $('#reader-content').addEventListener('touchend', e => {
-    if (state.readingMode === 'scroll-horizontal') return;
-    if (e.target.closest('.text-h-track')) return;
-    const dx = e.changedTouches[0].screenX - touchX;
-    if (Math.abs(dx) > 55) (dx < 0 ? goNext : goPrev)();
+  let touchY = 0;
+  $('#reader-content').addEventListener('touchstart', e => {
+    if (e.changedTouches && e.changedTouches[0]) {
+      touchX = e.changedTouches[0].screenX;
+      touchY = e.changedTouches[0].screenY;
+    }
   }, { passive: true });
+  $('#reader-content').addEventListener('touchend', e => {
+    if (state.readingMode === 'scroll-vertical') return;
+    if (state.readingMode === 'scroll-horizontal' && e.target.closest('.text-h-track')) return;
+    if (!e.changedTouches || !e.changedTouches[0]) return;
+    const dx = e.changedTouches[0].screenX - touchX;
+    const dy = e.changedTouches[0].screenY - touchY;
+    // Only trigger navigation for clearly horizontal swipes
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 55) {
+      _swipeJustHappened = true;
+      setTimeout(() => { _swipeJustHappened = false; }, 400);
+      (dx < 0 ? goNext : goPrev)();
+    }
+  }, { passive: true });
+
+  // Track scroll position for text page updates in vertical scroll mode
+  let _scrollTick = false;
+  $('#reader-content')?.addEventListener('scroll', () => {
+    if (_scrollTick) return;
+    _scrollTick = true;
+    requestAnimationFrame(() => {
+      _scrollTick = false;
+      if (state.readingMode !== 'scroll-vertical') return;
+      if (!['txt', 'html', 'htm', 'fb2'].includes(state.currentType)) return;
+      if (!state.textPages.length) return;
+      const rc = $('#reader-content');
+      if (!rc) return;
+      const maxScroll = rc.scrollHeight - rc.clientHeight;
+      if (maxScroll <= 0) return;
+      const ratio = Math.min(1, Math.max(0, rc.scrollTop / maxScroll));
+      state.textPage = Math.min(state.textPages.length - 1, Math.round(ratio * (state.textPages.length - 1)) || 0);
+      updateProgressBar();
+    });
+  });
 
   // ===== TTS: paragraph-aware, resumable, in-book highlighting =====
   const synth = window.speechSynthesis || null;
@@ -2598,8 +2682,7 @@
     } else if (['txt', 'html', 'htm', 'fb2'].includes(state.currentType)) {
       // Simple page list — jump preserves current reading mode
       const total = Math.max(1, state.textPages.length || 1);
-      const step = Math.max(1, Math.floor(total / 20));
-      for (let i = 0; i < total; i += step) {
+      for (let i = 0; i < total; i++) {
         const div = document.createElement('div');
         div.className = 'toc-item level-1';
         div.textContent = `Страница ${i + 1}`;
@@ -2622,8 +2705,7 @@
         box.appendChild(div);
       }
     } else if (state.currentType === 'pdf') {
-      const step = Math.max(1, Math.floor(state.pdfTotal / 25));
-      for (let i = 1; i <= state.pdfTotal; i += step) {
+      for (let i = 1; i <= state.pdfTotal; i++) {
         const div = document.createElement('div');
         div.className = 'toc-item level-1';
         div.textContent = `Страница ${i}`;
@@ -2859,7 +2941,7 @@
     const main = document.querySelector('.library-main');
     const bar = $('#library-toolbar');
     if (!main || !bar) return;
-    let lastY = 0;
+    let lastY = main.scrollTop;
     let ticking = false;
     const THRESHOLD = 8;
     const TOP_SHOW = 16;
