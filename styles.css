@@ -65,7 +65,7 @@
   --ease-soft: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
-[data-theme="light"] {
+html[data-theme="light"] {
   --bg: #f7f5f0;
   --bg-elevated: #ffffff;
   --surface: #ffffff;
@@ -87,7 +87,7 @@
   --shadow-gold: 0 12px 28px rgba(161, 116, 31, 0.16);
 }
 
-[data-theme="sepia"] {
+html[data-theme="sepia"] {
   --bg: #f1e7d3;
   --bg-elevated: #f8f0e0;
   --surface: #f8f0e0;
@@ -137,8 +137,8 @@ body {
     radial-gradient(820px 520px at 100% 6%, rgba(110, 84, 150, 0.08), transparent 60%),
     var(--bg);
 }
-[data-theme="light"] body,
-[data-theme="sepia"] body {
+html[data-theme="light"] body,
+html[data-theme="sepia"] body {
   background:
     radial-gradient(900px 460px at 14% -6%, rgba(161, 116, 31, 0.06), transparent 58%),
     var(--bg);
@@ -154,8 +154,8 @@ body::after {
   background-size: 100% 34px;
   mask-image: linear-gradient(to bottom, black, transparent 75%);
 }
-[data-theme="light"] body::after,
-[data-theme="sepia"] body::after { display: none; }
+html[data-theme="light"] body::after,
+html[data-theme="sepia"] body::after { display: none; }
 
 button, input, select, textarea { font-family: inherit; color: inherit; }
 button { -webkit-user-select: none; user-select: none; touch-action: manipulation; }
@@ -238,6 +238,8 @@ a { color: var(--accent); }
   border-color: var(--accent);
   color: var(--accent);
 }
+.icon-btn svg { width: 19px; height: 19px; flex-shrink: 0; }
+#favorites-filter-btn.active svg { fill: var(--accent); }
 
 /* ---------- Library main / scroll host ---------- */
 .library-main {
@@ -272,6 +274,7 @@ a { color: var(--accent); }
 .welcome-card {
   position: relative;
   overflow: hidden;
+  flex-shrink: 0;
   max-width: 640px;
   width: 100%;
   margin: clamp(16px, 6vh, 56px) auto;
@@ -370,8 +373,8 @@ a { color: var(--accent); }
   font-size: 0.74rem;
   font-weight: 500;
 }
-[data-theme="light"] .privacy-note,
-[data-theme="sepia"] .privacy-note { color: #2f8a58; background: rgba(74, 222, 128, 0.14); }
+html[data-theme="light"] .privacy-note,
+html[data-theme="sepia"] .privacy-note { color: #2f8a58; background: rgba(74, 222, 128, 0.14); }
 .privacy-note span { font-size: 0.5rem; color: var(--success); }
 
 .hint {
@@ -380,6 +383,16 @@ a { color: var(--accent); }
   margin-top: 18px !important;
   line-height: 1.5;
 }
+.welcome-converter-link {
+  display: inline-block;
+  margin-top: 14px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--border-strong);
+  transition: color 0.15s, border-color 0.15s;
+}
+.welcome-converter-link:hover { color: var(--accent); border-color: var(--accent); }
 
 /* Continue / reading history */
 .continue-session {
@@ -508,34 +521,39 @@ a { color: var(--accent); }
 }
 .hero-stat span { color: var(--text-muted); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
 
-/* ---------- Toolbar (sticky, auto-hides on scroll) ---------- */
+/* ---------- Toolbar (own flex row, pinned below header — not sticky.
+   iOS Safari has long-standing bugs rendering position:sticky inside a
+   nested custom scroll container, causing it to visually detach and jump
+   during momentum scrolling. Living in normal flow, outside the scrollable
+   area, sidesteps that entirely while still collapsing smoothly.) ---------- */
 .library-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 12;
-  margin: 0 0 14px;
-  border-bottom: 1px solid transparent;
-  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+  flex-shrink: 0;
+  max-height: 230px;
+  overflow: hidden;
+  z-index: 6;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  backdrop-filter: blur(16px) saturate(1.15);
+  -webkit-backdrop-filter: blur(16px) saturate(1.15);
+  transition: max-height 0.32s var(--ease), border-color 0.28s ease;
 }
-.library-toolbar.is-scrolled {
-  border-bottom-color: var(--border);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+.library-toolbar.hidden { display: none; }
+.library-toolbar.is-hidden {
+  max-height: 0;
+  border-bottom-color: transparent;
 }
-.library-toolbar.is-hidden { pointer-events: none; box-shadow: none; border-bottom-color: transparent; }
 .library-toolbar .toolbar-inner {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 10px 0 12px;
-  background: color-mix(in srgb, var(--bg) 90%, transparent);
-  backdrop-filter: blur(16px) saturate(1.15);
-  -webkit-backdrop-filter: blur(16px) saturate(1.15);
-  transform: translateY(0);
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 12px clamp(18px, 3vw, 44px) 13px;
   opacity: 1;
-  transition: transform 0.28s var(--ease), opacity 0.24s ease;
-  will-change: transform, opacity;
+  transform: translateY(0);
+  transition: opacity 0.22s ease, transform 0.28s var(--ease);
 }
-.library-toolbar.is-hidden .toolbar-inner { transform: translateY(calc(-100% - 6px)); opacity: 0; }
+.library-toolbar.is-hidden .toolbar-inner { opacity: 0; transform: translateY(-8px); }
 
 .toolbar-compact { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .toolbar-compact .search-box { flex: 1 1 160px; min-width: 140px; }
@@ -935,6 +953,7 @@ a { color: var(--accent); }
 }
 .reader-header-actions { display: flex; gap: 4px; }
 .reader-header-actions .icon-btn { width: 36px; height: 36px; font-size: 0.88rem; border-radius: 9px; }
+.reader-header-actions .icon-btn svg { width: 17px; height: 17px; }
 @media (max-width: 560px) {
   .reader-header-actions { margin-left: auto; overflow-x: auto; max-width: 56vw; scrollbar-width: none; }
   .reader-header-actions::-webkit-scrollbar { display: none; }
@@ -1215,6 +1234,7 @@ a { color: var(--accent); }
   transition: border-color 0.15s, background 0.15s;
 }
 .theme-opt.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.theme-opt svg { width: 16px; height: 16px; vertical-align: -3px; margin-right: 2px; }
 
 #font-size, #line-height, #tts-pitch, #tts-pause { width: 100%; accent-color: var(--accent); }
 
@@ -1580,6 +1600,7 @@ html[data-reading-mode="paged"] .reader-content { overflow: auto; -webkit-overfl
   .library-main { padding: 30px 34px 50px; }
   .app-header { padding-left: 28px; padding-right: 28px; }
   .reader-header { padding-left: 24px; padding-right: 24px; }
+  .library-toolbar .toolbar-inner { padding-left: 34px; padding-right: 34px; }
   .toolbar-actions { overflow-x: visible; }
 }
 @media (min-width: 1100px) {
@@ -1596,6 +1617,7 @@ html[data-reading-mode="paged"] .reader-content { overflow: auto; -webkit-overfl
   .app-header { padding-left: 16px; padding-right: 16px; }
   .subtitle { display: none; }
   .library-main { padding: 16px 12px calc(18px + var(--safe-bottom)); }
+  .library-toolbar .toolbar-inner { padding: 10px 12px 11px; }
   .picker-grid { grid-template-columns: 1fr; }
   .welcome-card { margin: 14px auto; padding: 40px 18px 28px; }
   .library-hero { align-items: flex-start; }

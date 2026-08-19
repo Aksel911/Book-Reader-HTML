@@ -29,12 +29,59 @@
         <p class="subtitle">Локальная библиотека · офлайн</p>
       </div>
       <div class="header-actions">
-        <button id="favorites-filter-btn" class="icon-btn" title="Избранное">⭐</button>
-        <button id="stats-btn" class="icon-btn" title="Статистика">📊</button>
-        <button id="theme-toggle" class="icon-btn" title="Тема">🌓</button>
+        <button id="favorites-filter-btn" class="icon-btn" title="Избранное"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l2.55 5.6 6.02.62-4.53 4.1 1.27 5.98L12 16.9l-5.31 2.9 1.27-5.98-4.53-4.1 6.02-.62L12 3.5z"/></svg></button>
+        <button id="stats-btn" class="icon-btn" title="Статистика"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M11 20V4M18 20v-7"/></svg></button>
+        <button id="theme-toggle" class="icon-btn" title="Тема"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12 3.5A8.5 8.5 0 0 0 12 20.5Z" fill="currentColor"/></svg></button>
         <button id="library-settings-btn" class="icon-btn" title="Настройки">⚙</button>
       </div>
     </header>
+
+    <!-- Toolbar lives OUTSIDE the scrollable area as its own flex row, so it's
+         structurally pinned below the header (no position:sticky — WebKit has
+         known bugs with sticky inside nested scroll containers on iOS). It
+         collapses smoothly on scroll-down and expands on scroll-up via JS
+         toggling .is-hidden (see setupLibraryToolbarAutoHide). -->
+    <div class="library-toolbar hidden" id="library-toolbar">
+      <div class="toolbar-inner">
+        <div id="folder-breadcrumb" class="folder-breadcrumb hidden"></div>
+        <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
+        <div class="toolbar-compact">
+          <div class="search-box">
+            <input type="search" id="search-books" placeholder="🔍 Поиск..." enterkeyhint="search">
+          </div>
+          <div class="toolbar-actions">
+            <select id="filter-type" class="sort-select" aria-label="Формат">
+              <option value="all">Формат</option>
+              <option value="pdf">PDF</option>
+              <option value="epub">EPUB</option>
+              <option value="fb2">FB2</option>
+              <option value="djvu">DJVU</option>
+              <option value="txt">TXT</option>
+              <option value="html">HTML</option>
+              <option value="archive">Архивы</option>
+            </select>
+            <select id="filter-status" class="sort-select" aria-label="Статус">
+              <option value="all">Статус</option>
+              <option value="unread">Не начато</option>
+              <option value="reading">Читаю</option>
+              <option value="finished">Прочитано</option>
+              <option value="favorites">⭐ Избранное</option>
+            </select>
+            <select id="sort-books" class="sort-select" aria-label="Сортировка">
+              <option value="name">А–Я</option>
+              <option value="progress">Прогресс</option>
+              <option value="type">Формат</option>
+              <option value="recent">Недавние</option>
+              <option value="size">Размер</option>
+            </select>
+          </div>
+        </div>
+        <div class="toolbar-meta-row">
+          <div class="stats" id="library-stats"></div>
+          <div id="filter-chips" class="filter-chips"></div>
+        </div>
+      </div>
+    </div>
 
     <main class="library-main">
       <section class="welcome-card" id="welcome-card">
@@ -69,6 +116,7 @@
         </div>
         <div class="privacy-note"><span>●</span> Всё остаётся на устройстве</div>
         <p class="hint">На iPhone можно выбирать папки, если это поддерживает текущая версия Safari. В остальных случаях выберите сразу несколько файлов.</p>
+        <a href="converter.html" class="welcome-converter-link">🔄 Нужно перегнать PDF/FB2/DJVU в EPUB? Откройте Book Studio</a>
       </section>
 
       <div id="library-content" class="hidden">
@@ -80,47 +128,6 @@
           </div>
           <div class="hero-stat"><strong id="hero-book-count">0</strong><span>файлов</span></div>
         </section>
-        <div class="library-toolbar" id="library-toolbar">
-          <div class="toolbar-inner">
-            <div id="folder-breadcrumb" class="folder-breadcrumb hidden"></div>
-            <div id="archive-breadcrumb" class="archive-breadcrumb hidden"></div>
-            <div class="toolbar-compact">
-              <div class="search-box">
-                <input type="search" id="search-books" placeholder="🔍 Поиск..." enterkeyhint="search">
-              </div>
-              <div class="toolbar-actions">
-                <select id="filter-type" class="sort-select" aria-label="Формат">
-                  <option value="all">Формат</option>
-                  <option value="pdf">PDF</option>
-                  <option value="epub">EPUB</option>
-                  <option value="fb2">FB2</option>
-                  <option value="djvu">DJVU</option>
-                  <option value="txt">TXT</option>
-                  <option value="html">HTML</option>
-                  <option value="archive">Архивы</option>
-                </select>
-                <select id="filter-status" class="sort-select" aria-label="Статус">
-                  <option value="all">Статус</option>
-                  <option value="unread">Не начато</option>
-                  <option value="reading">Читаю</option>
-                  <option value="finished">Прочитано</option>
-                  <option value="favorites">⭐ Избранное</option>
-                </select>
-                <select id="sort-books" class="sort-select" aria-label="Сортировка">
-                  <option value="name">А–Я</option>
-                  <option value="progress">Прогресс</option>
-                  <option value="type">Формат</option>
-                  <option value="recent">Недавние</option>
-                  <option value="size">Размер</option>
-                </select>
-              </div>
-            </div>
-            <div class="toolbar-meta-row">
-              <div class="stats" id="library-stats"></div>
-              <div id="filter-chips" class="filter-chips"></div>
-            </div>
-          </div>
-        </div>
         <div id="books-grid" class="books-grid"></div>
         <div class="library-footer-btns">
           <button id="reselect-folder" class="secondary-btn">📁 Другая папка</button>
@@ -137,8 +144,8 @@
       <h2 id="book-title" class="book-title-header">Книга</h2>
       <div class="reader-header-actions">
         <button id="toc-btn" class="icon-btn" title="Оглавление">☰</button>
-        <button id="bookmark-btn" class="icon-btn" title="Закладка">🔖</button>
-        <button id="search-in-book-btn" class="icon-btn" title="Поиск">🔍</button>
+        <button id="bookmark-btn" class="icon-btn" title="Закладка"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M6 3.5h12a.5.5 0 0 1 .5.5v16.2a.4.4 0 0 1-.63.33L12 16.2l-5.87 4.33A.4.4 0 0 1 5.5 20.2V4a.5.5 0 0 1 .5-.5z"/></svg></button>
+        <button id="search-in-book-btn" class="icon-btn" title="Поиск"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/></svg></button>
         <button id="toggle-chrome-btn" class="icon-btn" title="Скрыть/показать панели">▣</button>
         <button id="reader-settings-btn" class="icon-btn" title="Настройки">⚙</button>
         <button id="reader-menu-btn" class="icon-btn" title="Меню">⋮</button>
@@ -216,9 +223,9 @@
       <div class="setting-group">
         <label>Тема</label>
         <div class="theme-options">
-          <button data-theme="light" class="theme-opt">☀️ Светлая</button>
-          <button data-theme="sepia" class="theme-opt">📜 Сепия</button>
-          <button data-theme="dark" class="theme-opt active">🌙 Тёмная</button>
+          <button data-theme="light" class="theme-opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="4.3"/><path d="M12 2.5v2.6M12 18.9v2.6M4.9 4.9l1.85 1.85M17.25 17.25l1.85 1.85M2.5 12h2.6M18.9 12h2.6M4.9 19.1l1.85-1.85M17.25 6.75l1.85-1.85"/></svg> Светлая</button>
+          <button data-theme="sepia" class="theme-opt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M5 4.5h11.5A2.5 2.5 0 0 1 19 7v13H7.5A2.5 2.5 0 0 1 5 17.5v-13z"/><path d="M19 20a2.5 2.5 0 0 1-2.5-2.5H19"/><path d="M8.5 9h6.5M8.5 12.3h6.5"/></svg> Сепия</button>
+          <button data-theme="dark" class="theme-opt active"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.4 14.7A8.5 8.5 0 1 1 9.3 3.6a7 7 0 0 0 11.1 11.1z"/></svg> Тёмная</button>
         </div>
       </div>
 
@@ -312,6 +319,8 @@
         <p class="settings-note-inline">Поиск точных дубликатов (SHA-256) и «умных» совпадений по тексту (TXT/FB2/HTML/EPUB). Удаляются только из списка в приложении — файлы на диске не трогаются.</p>
         <button type="button" id="dedupe-library-btn" class="secondary-btn full" style="margin-top:8px">🧹 Найти и убрать дубликаты</button>
         <div id="dedupe-result" class="settings-note-inline" style="margin-top:8px"></div>
+        <a href="converter.html" class="secondary-btn full" style="margin-top:10px;display:block;text-align:center;text-decoration:none;box-sizing:border-box">🔄 Book Studio — конвертер в EPUB</a>
+        <p class="settings-note-inline" style="margin-top:6px">Приводит PDF, FB2 и DJVU к формату EPUB прямо в браузере, без загрузки на сервер.</p>
       </div>
 
       <button id="close-modal" class="primary-btn">Готово</button>

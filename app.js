@@ -867,7 +867,8 @@
   function renderContinueSession() {
     const box = $('#continue-session');
     if (!box) return;
-    const catalog = getLibraryCatalog();
+    const rawCatalog = getLibraryCatalog();
+    const catalog = (rawCatalog && rawCatalog.count > 0) ? rawCatalog : null;
     const history = getReadingHistory();
     const recents = loadJSON('recentBooks', {});
     const recentKeys = Object.keys(recents).sort((a, b) => (recents[b] || 0) - (recents[a] || 0));
@@ -1182,6 +1183,7 @@
   function renderLibrary(filter = '') {
     $('#welcome-card').classList.add('hidden');
     $('#library-content').classList.remove('hidden');
+    $('#library-toolbar').classList.remove('hidden');
     renderFolderBreadcrumb();
     if (!state.archiveStack.length) { $('#archive-breadcrumb').classList.add('hidden'); } else { renderBreadcrumb(); }
     const source = getCurrentBooks();
