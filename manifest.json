@@ -4,8 +4,8 @@
   "description": "Красивый читатель книг с умной озвучкой для iPhone",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#0b0b0d",
-  "theme_color": "#0b0b0d",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
   "orientation": "any",
   "icons": [
     {

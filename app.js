@@ -343,6 +343,10 @@
     state.readerTheme = theme;
     localStorage.setItem('readerTheme', theme);
     $$('.theme-opt').forEach(b => b.classList.toggle('active', b.dataset.theme === theme));
+    const metaTheme = document.getElementById('meta-theme-color');
+    if (metaTheme) {
+      metaTheme.content = theme === 'light' ? '#f7f5f0' : theme === 'sepia' ? '#f1e7d3' : '#0a0a0b';
+    }
   }
 
   function applyReaderStyles() {
@@ -1168,7 +1172,7 @@
     return `<div class="book-cover book-cover-${escapeHtml(book.type)}" data-book-key="${escapeHtml(book.key || book.path)}">
       <div class="cover-noise"></div>
       <div class="cover-spine"></div>
-      <div class="cover-top"><span class="cover-format">${ext}</span><span class="cover-mark">✦</span></div>
+      <div class="cover-top"><span class="cover-format">${ext}</span></div>
       <div class="cover-center"><div class="cover-initials">${initials || 'BK'}</div><div class="cover-mini-title">${title}</div></div>
       <div class="cover-bottom"><span>LOCAL LIBRARY</span><span>OFFLINE</span></div>
     </div>`;
