@@ -120,6 +120,7 @@ html, body {
   height: 100%;
   min-height: 100%;
   overflow: hidden;
+  overscroll-behavior-y: contain;
   font-family: var(--font);
   background: var(--bg);
   color: var(--text);
@@ -158,8 +159,18 @@ html[data-theme="light"] body::after,
 html[data-theme="sepia"] body::after { display: none; }
 
 button, input, select, textarea { font-family: inherit; color: inherit; }
-button { -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+button { -webkit-user-select: none; user-select: none; touch-action: manipulation; -webkit-touch-callout: none; }
 input, textarea, select { -webkit-user-select: text; user-select: text; }
+/* Book covers and icon glyphs shouldn't trigger iOS's long-press "Save Image"
+   / callout menu — it's one of the fastest ways a screen stops feeling like
+   an app and starts feeling like a browser tab. Reading text is the
+   deliberate, sole exception: people need to long-press to select and copy
+   from a book, so .text-reader (and friends) opt back in explicitly below. */
+.book-cover, .icon-btn, .ctrl-btn, .tts-btn, .folder-icon, .cover-initials, .logo, .studio-mark {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 ::selection { background: rgba(205, 168, 106, 0.35); }
 a { color: var(--accent); }
 
@@ -247,6 +258,7 @@ a { color: var(--accent); }
   position: relative;
   z-index: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   width: 100%;
   max-width: var(--page-max);
@@ -526,34 +538,48 @@ html[data-theme="sepia"] .privacy-note { color: #2f8a58; background: rgba(74, 22
    nested custom scroll container, causing it to visually detach and jump
    during momentum scrolling. Living in normal flow, outside the scrollable
    area, sidesteps that entirely while still collapsing smoothly.) ---------- */
+/* ---------- Toolbar (own flex row, pinned below header — not sticky.
+   iOS Safari has long-standing bugs rendering position:sticky inside a
+   nested custom scroll container, causing it to visually detach and jump
+   during momentum scrolling. Living in normal flow, outside the scrollable
+   area, sidesteps that entirely while still collapsing smoothly.
+
+   The collapse itself uses a CSS grid-template-rows 1fr↔0fr transition
+   rather than animating max-height. Animating max-height against a padded
+   guess value (rather than the real content height) makes the motion
+   non-linear and feels jerky — the content finishes appearing long before
+   the transition "ends". Animating the grid row track instead tracks the
+   real height exactly, with no guessing, so the motion reads as one
+   continuous, evenly-paced movement. ) ---------- */
 .library-toolbar {
+  display: grid;
+  grid-template-rows: 1fr;
   flex-shrink: 0;
-  max-height: 230px;
-  overflow: hidden;
   z-index: 6;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
   backdrop-filter: blur(16px) saturate(1.15);
   -webkit-backdrop-filter: blur(16px) saturate(1.15);
-  transition: max-height 0.32s var(--ease), border-color 0.28s ease;
+  transition: grid-template-rows 0.36s var(--ease), border-color 0.3s ease;
 }
 .library-toolbar.hidden { display: none; }
 .library-toolbar.is-hidden {
-  max-height: 0;
+  grid-template-rows: 0fr;
   border-bottom-color: transparent;
 }
 .library-toolbar .toolbar-inner {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+  overflow: hidden;
   max-width: var(--page-max);
   margin: 0 auto;
   padding: 12px clamp(18px, 3vw, 44px) 13px;
   opacity: 1;
-  transform: translateY(0);
-  transition: opacity 0.22s ease, transform 0.28s var(--ease);
+  transition: opacity 0.32s ease;
 }
-.library-toolbar.is-hidden .toolbar-inner { opacity: 0; transform: translateY(-8px); }
+.library-toolbar.is-hidden .toolbar-inner { opacity: 0; transition-duration: 0.16s; }
 
 .toolbar-compact { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .toolbar-compact .search-box { flex: 1 1 160px; min-width: 140px; }
@@ -964,6 +990,7 @@ html[data-theme="sepia"] .privacy-note { color: #2f8a58; background: rgba(74, 22
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   background: var(--bg);
   position: relative;
@@ -1468,6 +1495,7 @@ html[data-reading-mode="scroll-horizontal"] .reader-content:has(.pdf-viewer-hori
   word-break: break-word;
   user-select: text;
   -webkit-user-select: text;
+  -webkit-touch-callout: default;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   -webkit-text-size-adjust: 100%;
@@ -1646,3 +1674,96 @@ html[data-reading-mode="paged"] .reader-content { overflow: auto; -webkit-overfl
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Add-to-Home-Screen nudge (iOS only, shown once) ---------- */
+.a2hs-prompt {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 400;
+  display: flex;
+  justify-content: center;
+  padding: 0 14px calc(14px + var(--safe-bottom));
+  pointer-events: none;
+}
+.a2hs-prompt.hidden { display: none; }
+.a2hs-card {
+  pointer-events: auto;
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 22px 22px 20px;
+  animation: a2hsIn 0.36s var(--ease);
+}
+@keyframes a2hsIn {
+  from { transform: translateY(calc(100% + 20px)); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.a2hs-close {
+  position: absolute;
+  top: 12px; right: 12px;
+  width: 30px; height: 30px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.a2hs-icon {
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  border-radius: 13px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(205, 168, 106, 0.35);
+  color: var(--accent);
+  font-size: 1.2rem;
+  margin-bottom: 14px;
+}
+.a2hs-card h3 {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: 1.2rem;
+  margin-bottom: 6px;
+  letter-spacing: -0.01em;
+}
+.a2hs-card > p {
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+.a2hs-steps {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.a2hs-steps li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.86rem;
+  color: var(--text);
+}
+.a2hs-steps li > span:last-child { flex: 1; line-height: 1.4; }
+.a2hs-step-icon {
+  flex-shrink: 0;
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: 9px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  font-size: 0.95rem;
+  color: var(--accent);
+}
+.a2hs-step-icon svg { width: 16px; height: 16px; }
+.a2hs-card .primary-btn { margin-top: 0; }
+@media (min-width: 560px) {
+  .a2hs-prompt { justify-content: flex-end; padding-right: 24px; padding-bottom: calc(24px + var(--safe-bottom)); }
+  .a2hs-card { max-width: 360px; }
+}

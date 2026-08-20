@@ -1285,7 +1285,7 @@
 
   // ===== Open book =====
   async function openBook(book) {
-    if (book.isArchive || isArchive(book.name || book.path || '')) {
+    if (book.isArchive || isArchive(book.path || book.name || '')) {
       await openArchive(book);
       return;
     }
@@ -1324,7 +1324,12 @@
 
   // ===== Archives (ZIP fully, RAR best-effort) =====
   async function openArchive(book) {
-    const ext = getExt(book.name || book.path || 'file.zip');
+    // book.name has its extension stripped for display (see makeBook()), so
+    // re-deriving the format from it here always failed — this was silently
+    // throwing "Формат архива не поддерживается" for every single ZIP/RAR.
+    // book.type is the authoritative, already-correct extension computed at
+    // import time; fall back to path/name only if it's somehow missing.
+    const ext = (book.type || getExt(book.path || book.name || 'file.zip') || '').toLowerCase();
     showLoading(ext === 'zip' ? 'Распаковываю ZIP...' : 'Пробую открыть RAR...');
 
     try {
@@ -1807,11 +1812,29 @@
     return out;
   }
 
-  function buildTTSUnits(text) {
+  function splitIntoParagraphs(text) {
+    // Single source of truth for paragraph segmentation — used both when
+    // rendering DOM paragraphs and when building TTS units. Previously these
+    // lived as two separate near-duplicate implementations that could
+    // disagree (the DOM renderer had a single-newline fallback for
+    // blank-line-less text; the TTS builder didn't), silently producing a
+    // different paragraph count/order than what was on screen — which is
+    // why highlighting and tap-to-read-from-here could point at the wrong
+    // paragraph.
+    let paragraphs = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
+    if (paragraphs.length <= 1) {
+      const alt = String(text || '').replace(/\r\n?/g, '\n').split(/\n/).map(s => s.trim()).filter(Boolean);
+      if (alt.length > 1) paragraphs = alt;
+    }
+    return paragraphs;
+  }
+
+  function buildTTSUnits(text, baseParagraphIndex = 0) {
     const normalized = String(text || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ');
-    const paragraphs = normalized.split(/\n\s*\n/);
+    const paragraphs = splitIntoParagraphs(normalized);
     const units = [];
-    paragraphs.forEach((raw, paragraphIndex) => {
+    paragraphs.forEach((raw, i) => {
+      const paragraphIndex = baseParagraphIndex + i;
       const sentences = tokenizeParagraph(raw);
       sentences.forEach((sentence, sentenceIndex) => {
         units.push({
@@ -1871,12 +1894,7 @@
 
   function fillParagraphs(container, text, baseParagraphIndex = 0) {
     const frag = document.createDocumentFragment();
-    // Split on blank lines first; if almost no paragraphs, fall back to single newlines
-    let paragraphs = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(s => s.trim()).filter(Boolean);
-    if (paragraphs.length <= 1) {
-      const alt = String(text || '').replace(/\r\n?/g, '\n').split(/\n/).map(s => s.trim()).filter(Boolean);
-      if (alt.length > 1) paragraphs = alt;
-    }
+    const paragraphs = splitIntoParagraphs(text);
     paragraphs.forEach((raw, i) => {
       const paragraphIndex = baseParagraphIndex + i;
       const p = document.createElement('p');
@@ -1921,18 +1939,35 @@
     const isPaged = mode === 'paged';
     const sideBySide = isTwoPage && window.innerWidth >= 560;
 
-    // Always re-paginate for page-based modes so viewport/font changes apply
+    // Re-paginate only when something that actually affects page boundaries
+    // changed (viewport size, font, line-height, or the book itself) —
+    // identified by a cheap key. Previously this recomputed state.textPages
+    // from scratch on every single page turn and re-derived the page index
+    // by round-tripping it through a ratio (page/oldLength * newLength).
+    // When the two lengths happen to be equal (the normal case — nothing
+    // about the layout changed), that round trip should be a no-op, but
+    // floating-point division/multiplication doesn't always land back on
+    // an exact integer (e.g. 7/23*23 can come out as 6.999999999), and with
+    // Math.floor that silently drops the page index by one. Over repeated
+    // page turns those small errors could accumulate into a visible drift —
+    // "page navigation feels crooked". Skipping the recompute entirely when
+    // nothing relevant changed removes the risk altogether for the common
+    // case, and Math.round (rather than floor) makes the genuine repagination
+    // case (resize/font change) tolerant of the same rounding noise too.
     if ((isPaged || isHorizontal || isTwoPage) && state.fullText) {
       const widthFactor = sideBySide ? 0.46 : 1;
       const pageSize = estimateCharsPerPage(widthFactor);
-      const ratio = state.textPages.length
-        ? (state.textPage / Math.max(1, state.textPages.length))
-        : (state.currentBook?.progress || 0);
-      state.textPages = splitTextIntoPages(state.fullText, pageSize);
-      // Align to even index for two-page spreads
-      let idx = Math.min(state.textPages.length - 1, Math.floor(ratio * state.textPages.length) || 0);
-      if (isTwoPage && idx % 2 === 1) idx = Math.max(0, idx - 1);
-      state.textPage = idx;
+      const pageKey = `${pageSize}:${widthFactor}:${state.fullText.length}:${state.fontSize}:${state.lineHeight}`;
+      if (state._lastPageKey !== pageKey || !state.textPages.length) {
+        const ratio = state.textPages.length
+          ? (state.textPage / Math.max(1, state.textPages.length))
+          : (state.currentBook?.progress || 0);
+        state.textPages = splitTextIntoPages(state.fullText, pageSize);
+        let idx = Math.min(state.textPages.length - 1, Math.round(ratio * state.textPages.length) || 0);
+        if (isTwoPage && idx % 2 === 1) idx = Math.max(0, idx - 1);
+        state.textPage = idx;
+        state._lastPageKey = pageKey;
+      }
     }
 
     el.className = 'text-reader';
@@ -2018,8 +2053,8 @@
       if (state.textPage % 2 === 1) state.textPage = Math.max(0, state.textPage - 1);
       const leftIdx = state.textPage;
       const rightIdx = Math.min(state.textPages.length - 1, leftIdx + 1);
-      fillParagraphs(left, state.textPages[leftIdx] || '', 0);
-      if (rightIdx > leftIdx) fillParagraphs(right, state.textPages[rightIdx] || '', 0);
+      const leftCount = fillParagraphs(left, state.textPages[leftIdx] || '', 0);
+      if (rightIdx > leftIdx) fillParagraphs(right, state.textPages[rightIdx] || '', leftCount);
       else right.innerHTML = '<div class="text-empty-col"></div>';
       spread.appendChild(left);
       spread.appendChild(right);
@@ -2346,13 +2381,31 @@
     el.querySelectorAll('.read-paragraph.is-speaking').forEach(x => x.classList.remove('is-speaking'));
   }
 
+  // Horizontal-scroll mode pre-renders every page's paragraphs into the DOM
+  // simultaneously (for smooth swipe-snap), and each page numbers its own
+  // paragraphs starting at 0 independently — so a global "#text-reader ..."
+  // query for e.g. paragraph 2 can match page 1's paragraph 2 instead of the
+  // currently-visible page's, sending the highlight off-screen where the
+  // reader can't see it. Scoping the query to the active page's own
+  // container (which two-page/continuous/paged modes don't need, since they
+  // either chain indices globally or only ever have one page in the DOM)
+  // fixes that without touching the indexing scheme itself.
+  function getActiveParagraphScope() {
+    if (state.readingMode === 'scroll-horizontal') {
+      const page = document.querySelector(`.text-h-page[data-page-index="${state.textPage}"]`);
+      if (page) return page;
+    }
+    return document.getElementById('text-reader') || document;
+  }
+
   function highlightSentence(idx) {
     const item = state.ttsSentences[idx];
     if (!item) return;
     clearTextSentenceHighlights();
     if (['txt','html','htm','fb2'].includes(state.currentType)) {
-      const el = document.querySelector(`#text-reader .read-sentence[data-tts-id="${CSS.escape(`${item.paragraphIndex}:${item.sentenceIndex}`)}"]`);
-      const p = document.querySelector(`#text-reader .read-paragraph[data-paragraph-index="${item.paragraphIndex}"]`);
+      const scope = getActiveParagraphScope();
+      const el = scope.querySelector(`.read-sentence[data-tts-id="${CSS.escape(`${item.paragraphIndex}:${item.sentenceIndex}`)}"]`);
+      const p = scope.querySelector(`.read-paragraph[data-paragraph-index="${item.paragraphIndex}"]`);
       if (p) p.classList.add('is-speaking');
       if (el) {
         el.classList.add('is-speaking');
@@ -2522,10 +2575,33 @@
     synth.speak(u);
   }
 
-  function startTTS() { speakSentences(buildTTSUnits(getCurrentText())); }
+  // In two-page mode the DOM renders two independent columns whose paragraph
+  // indices are chained (right column continues where the left leaves off —
+  // see the isTwoPage branch in renderTextPage). Building TTS units must
+  // mirror that exactly: parsing the concatenated "left\n\nright" blob as one
+  // string can segment differently (the paragraph-splitter's fallback logic
+  // triggers per amount of blank-line breaks, which differs between "each
+  // column alone" and "both columns joined"), silently producing a different
+  // paragraph count than what's on screen. Building each column separately,
+  // offset the same way the DOM was, keeps them guaranteed identical.
+  function buildTTSUnitsForCurrentView() {
+    if (state.readingMode === 'two-page' && state.textPages && state.textPages.length) {
+      const leftIdx = state.textPage;
+      const rightIdx = Math.min(state.textPages.length - 1, leftIdx + 1);
+      const leftText = state.textPages[leftIdx] || '';
+      const rightText = rightIdx > leftIdx ? (state.textPages[rightIdx] || '') : '';
+      const leftUnits = buildTTSUnits(leftText, 0);
+      const leftCount = splitIntoParagraphs(leftText).length;
+      const rightUnits = rightText ? buildTTSUnits(rightText, leftCount) : [];
+      return leftUnits.concat(rightUnits);
+    }
+    return buildTTSUnits(getCurrentText());
+  }
+
+  function startTTS() { speakSentences(buildTTSUnitsForCurrentView()); }
 
   function startTTSFromParagraph(paragraphIndex) {
-    const units = buildTTSUnits(getCurrentText()).filter(u => u.paragraphIndex >= paragraphIndex);
+    const units = buildTTSUnitsForCurrentView().filter(u => u.paragraphIndex >= paragraphIndex);
     const first = units.findIndex(u => u.paragraphIndex === paragraphIndex);
     if (first < 0) return toast('В этом абзаце нет текста для озвучки');
     if (synth) synth.cancel();
@@ -2942,31 +3018,50 @@
     });
   }
 
-  // Library toolbar: stay sticky, smoothly hide on scroll down, show on scroll up
+  // Library toolbar: stay pinned below header, collapse smoothly on scroll
+  // down, expand on scroll up. Uses cumulative-delta hysteresis + a cooldown
+  // after each toggle so tiny momentum-scroll jitter can't flip it back and
+  // forth mid-animation (which read as "trembling").
   (function setupLibraryToolbarAutoHide() {
     const main = document.querySelector('.library-main');
     const bar = $('#library-toolbar');
     if (!main || !bar) return;
     let lastY = main.scrollTop;
     let ticking = false;
-    const THRESHOLD = 8;
+    let lastToggleAt = -Infinity;
+    let accumUp = 0, accumDown = 0;
+    const THRESHOLD = 26;   // cumulative px in one direction before toggling
     const TOP_SHOW = 16;
+    const COOLDOWN = 260;   // ms — let the current transition settle before flipping again
 
     const update = () => {
       ticking = false;
       const y = main.scrollTop;
       const dy = y - lastY;
-      bar.classList.toggle('is-scrolled', y > TOP_SHOW);
-      if (y <= TOP_SHOW) {
-        bar.classList.remove('is-hidden');
-      } else if (dy > THRESHOLD) {
-        // scrolling down → hide
-        bar.classList.add('is-hidden');
-      } else if (dy < -THRESHOLD) {
-        // scrolling up → show
-        bar.classList.remove('is-hidden');
-      }
       lastY = y;
+      bar.classList.toggle('is-scrolled', y > TOP_SHOW);
+
+      if (y <= TOP_SHOW) {
+        accumUp = 0; accumDown = 0;
+        bar.classList.remove('is-hidden');
+        return;
+      }
+
+      if (dy > 0) { accumDown += dy; accumUp = 0; }
+      else if (dy < 0) { accumUp -= dy; accumDown = 0; }
+
+      const now = performance.now();
+      if (now - lastToggleAt < COOLDOWN) return;
+
+      if (accumDown > THRESHOLD && !bar.classList.contains('is-hidden')) {
+        bar.classList.add('is-hidden');
+        lastToggleAt = now;
+        accumDown = 0;
+      } else if (accumUp > THRESHOLD && bar.classList.contains('is-hidden')) {
+        bar.classList.remove('is-hidden');
+        lastToggleAt = now;
+        accumUp = 0;
+      }
     };
 
     main.addEventListener('scroll', () => {
@@ -3049,6 +3144,27 @@
       try { synth.resume(); } catch (e) {}
     }
   });
+
+  // Pinch-to-zoom is disabled by default (maximum-scale=1, user-scalable=no
+  // in the viewport meta) so an accidental two-finger touch while turning
+  // pages can't distort the layout. Browsers do re-read the viewport meta
+  // tag's `content` when it changes at runtime, so this can be a genuine
+  // opt-in toggle rather than requiring a page reload.
+  function applyPinchZoom(enabled) {
+    const meta = document.querySelector('meta[name="viewport"]');
+    if (meta) {
+      meta.setAttribute('content', enabled
+        ? 'width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover'
+        : 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover');
+    }
+    localStorage.setItem('allowPinchZoom', enabled ? '1' : '0');
+  }
+  const pinchZoomBox = $('#allow-pinch-zoom');
+  if (pinchZoomBox) {
+    pinchZoomBox.checked = localStorage.getItem('allowPinchZoom') === '1';
+    applyPinchZoom(pinchZoomBox.checked);
+    pinchZoomBox.addEventListener('change', (e) => applyPinchZoom(e.target.checked));
+  }
 
   // ===== Stats =====
   $('#stats-btn').addEventListener('click', () => {
@@ -3154,6 +3270,39 @@
       }
     }, true);
   }
+
+  // ===== Add-to-Home-Screen nudge (iOS only, once) =====
+  (function setupA2HSPrompt() {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS reports as Mac
+    const isStandalone = window.navigator.standalone === true ||
+      window.matchMedia('(display-mode: standalone)').matches;
+    if (!isIOS || isStandalone) return;
+    if (localStorage.getItem('a2hsPromptShown')) return;
+
+    const el = $('#a2hs-prompt');
+    if (!el) return;
+
+    const dismiss = () => {
+      el.classList.add('hidden');
+      localStorage.setItem('a2hsPromptShown', '1');
+    };
+    $('#a2hs-dismiss').addEventListener('click', dismiss);
+    $('#a2hs-ok').addEventListener('click', dismiss);
+
+    // Wait a few seconds so it never greets a first-time visitor before
+    // they've seen anything — it should read as a considered suggestion,
+    // not a doorway ad.
+    setTimeout(() => {
+      // Don't interrupt someone who has already started reading a book.
+      if (document.getElementById('reader-screen').classList.contains('active')) return;
+      el.classList.remove('hidden');
+      // Mark as shown the moment it's displayed, not just on dismissal —
+      // otherwise someone who never taps either button (just navigates
+      // away) would see it again on every visit, defeating "only once".
+      localStorage.setItem('a2hsPromptShown', '1');
+    }, 4000);
+  })();
 
   console.log('Умный Читатель v6.10 готов 📚✨');
 })();

@@ -302,6 +302,14 @@
         </label>
       </div>
 
+      <div class="setting-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="allow-pinch-zoom">
+          Зум страницы двумя пальцами
+        </label>
+        <p class="settings-note-inline">Полезно для мелкого текста в PDF и на сканах. По умолчанию выключено, чтобы случайный щипок не сбивал разметку.</p>
+      </div>
+
       <div class="setting-group" id="fav-tags-section">
         <label>Избранное и теги текущей книги</label>
         <label class="checkbox-label">
@@ -394,6 +402,25 @@
 
   <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
+
+  <!-- iOS-only, one-time nudge to install as a home-screen app. iOS has no
+       programmatic install prompt (unlike Android's beforeinstallprompt) —
+       the only way to add a page to the home screen is the user manually
+       tapping Share → Add to Home Screen, so the best a page can do is
+       explain those exact steps clearly, once, without being pushy. -->
+  <div id="a2hs-prompt" class="a2hs-prompt hidden" role="dialog" aria-label="Установить на экран Домой">
+    <div class="a2hs-card">
+      <button type="button" id="a2hs-dismiss" class="a2hs-close" aria-label="Закрыть">✕</button>
+      <div class="a2hs-icon">✦</div>
+      <h3>Установите как приложение</h3>
+      <p>Читайте книги в полноэкранном режиме, без строки браузера — как в обычном приложении.</p>
+      <ol class="a2hs-steps">
+        <li><span class="a2hs-step-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M5 12v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg></span><span>Нажмите <strong>«Поделиться»</strong> внизу экрана Safari</span></li>
+        <li><span class="a2hs-step-icon">➕</span><span>Выберите <strong>«На экран «Домой»»</strong></span></li>
+      </ol>
+      <button type="button" id="a2hs-ok" class="primary-btn">Понятно</button>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
